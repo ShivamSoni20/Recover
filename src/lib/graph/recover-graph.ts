@@ -665,7 +665,11 @@ export function createRecoverGraph() {
   workflow.addEdge("propose_recovery", "recovery_gate");
 
   workflow.addConditionalEdges("recovery_gate", (state) => {
-    return state.gate?.authorized ? "await_approval" : END;
+    if (!state.gate?.authorized) return END;
+    if (state.proposal?.strategy === "WAIT_FOR_CANONICAL_UPDATE") {
+      return "check_already_paid"; // Loops or terminates safely without creating Payment Link
+    }
+    return "await_approval";
   });
 
   workflow.addConditionalEdges("await_approval", (state) => {
@@ -686,7 +690,14 @@ export function createRecoverGraph() {
     return state.terminalStatus === "FAILED_SAFE" ? END : "await_recovery_event";
   });
 
-  workflow.addEdge("await_recovery_event", "verify_recovery");
+  workflow.addConditionalEdges("await_recovery_event", (state) => {
+    if (state.terminalStatus === "STOPPED_ALREADY_PAID") {
+      return "handle_original_late_capture";
+    }
+    return "verify_recovery";
+  });
+
+  workflow.addEdge("handle_original_late_capture", END);
   workflow.addEdge("verify_recovery", END);
 
   return workflow;

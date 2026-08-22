@@ -10,6 +10,11 @@ async function ingestKnowledge() {
   console.log("=== RAG Knowledge Ingestion ===");
 
   const knowledgeDir = path.join(process.cwd(), "knowledge");
+  if (!fs.existsSync(knowledgeDir)) {
+    console.error("Knowledge directory not found at", knowledgeDir);
+    process.exit(1);
+  }
+
   const files = fs.readdirSync(knowledgeDir).filter((f) => f.endsWith(".md"));
 
   if (files.length === 0) {
@@ -34,12 +39,12 @@ async function ingestKnowledge() {
       .select("id")
       .single();
 
-    if (docError) {
-      console.error(`Error saving document ${source}:`, docError.message);
+    if (docError || !doc) {
+      console.error(`Error saving document ${source}:`, docError?.message);
       continue;
     }
 
-    // 2. Chunk content by section headers
+    // 2. Chunk content by section headers (## )
     const rawSections = content.split(/\n(?=## )/);
     const chunks = rawSections.map((sec, idx) => ({
       document_id: doc.id,
@@ -48,27 +53,35 @@ async function ingestKnowledge() {
       metadata: { source, title, index: idx },
     }));
 
-    console.log(`Generating embeddings for ${chunks.length} chunks...`);
+    console.log(`Generating embeddings for ${chunks.length} chunks (dim: 1536)...`);
 
     for (const chunk of chunks) {
       try {
         const vector = await embeddings.embedQuery(chunk.content);
-        await supabase.from("knowledge_chunks").insert({
-          document_id: chunk.document_id,
-          chunk_index: chunk.chunk_index,
-          content: chunk.content,
-          metadata: chunk.metadata,
-          embedding: vector,
-        });
+        // Idempotent upsert by (document_id, chunk_index)
+        const { error: chunkError } = await supabase.from("knowledge_chunks").upsert(
+          {
+            document_id: chunk.document_id,
+            chunk_index: chunk.chunk_index,
+            content: chunk.content,
+            metadata: chunk.metadata,
+            embedding: vector,
+          },
+          { onConflict: "document_id,chunk_index" }
+        );
+
+        if (chunkError) {
+          console.warn(`[Warning] Chunk ${chunk.chunk_index} upsert error:`, chunkError.message);
+        }
       } catch (err: unknown) {
-        console.warn(`[Warning] Embedding failed for chunk ${chunk.chunk_index}:`, err);
+        console.warn(`[Warning] Embedding call failed for chunk ${chunk.chunk_index}:`, err);
       }
     }
 
-    console.log(`Completed ${file}`);
+    console.log(`✓ Completed & indexed ${file}`);
   }
 
-  console.log("\n=== Ingestion Complete ===");
+  console.log("\n=== Ingestion Complete & Idempotent ===");
 }
 
 ingestKnowledge().catch((err) => {

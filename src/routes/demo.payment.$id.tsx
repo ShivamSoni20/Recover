@@ -129,8 +129,29 @@ function PaymentCase() {
         },
       });
       setApprovalPhase("creating");
-      setTimeout(() => {
-        navigate({ to: "/demo/recovery/$id/checkout", params: { id: caseData.id } });
+
+      // Poll until recovery action is created with real payment_link_id
+      let attempts = 0;
+      const checkInterval = setInterval(async () => {
+        attempts++;
+        try {
+          const freshData = await getCaseFn({ data: caseData.id });
+          const action = freshData?.recovery_actions?.[0];
+          if (action?.payment_link_id && action?.status === "CREATED") {
+            clearInterval(checkInterval);
+            navigate({ to: "/demo/recovery/$id/checkout", params: { id: caseData.id } });
+          } else if (freshData?.terminal_status === "STOPPED_ALREADY_PAID") {
+            clearInterval(checkInterval);
+            setApprovalPhase("idle");
+            loadCase();
+          }
+        } catch {
+          // Continue polling
+        }
+        if (attempts > 15) {
+          clearInterval(checkInterval);
+          setApprovalPhase("idle");
+        }
       }, 1000);
     } catch (err) {
       console.error("[Decision Error]:", err);
@@ -215,7 +236,12 @@ function PaymentCase() {
             steps={MACHINE_STEPS}
             completed={authorized ? 5 : diagnosisReady ? 3 : 1}
           />
-          {diagnosisReady ? <AIDiagnosisCard demoCase={demoCaseAdapter} /> : null}
+          {diagnosisReady ? (
+            <AIDiagnosisCard
+              demoCase={demoCaseAdapter}
+              evidenceFields={diagnosis?.evidence_fields as string[] | undefined}
+            />
+          ) : null}
           {gateStarted ? (
             <RecoveryGate checks={gateChecks} revealed={gateChecks.length} authorized={authorized} />
           ) : null}

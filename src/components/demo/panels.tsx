@@ -6,10 +6,10 @@ import { formatINR, type DemoCase, type GateCheck } from "@/lib/demo/types";
 export function ProviderTruthPanel({ demoCase }: { demoCase: DemoCase }) {
   return (
     <Panel
-      title="Provider Truth"
+      title="Razorpay Provider Truth"
       aside={
-        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
-          Demo provider state
+        <span className="rounded-full bg-brand-softer px-2 py-0.5 text-[10px] font-semibold text-brand">
+          Razorpay Test Mode
         </span>
       }
     >
@@ -52,7 +52,21 @@ export function RecoveryMachineTimeline({
   );
 }
 
-export function AIDiagnosisCard({ demoCase }: { demoCase: DemoCase }) {
+export function AIDiagnosisCard({
+  demoCase,
+  evidenceFields = [],
+}: {
+  demoCase: DemoCase;
+  evidenceFields?: string[];
+}) {
+  const displayEvidence = evidenceFields.length > 0
+    ? evidenceFields
+    : [
+        `Payment method: ${demoCase.method}`,
+        `Error reason: ${demoCase.failureReason}`,
+        `Error detail: ${demoCase.failureDetail}`,
+      ];
+
   return (
     <section className="rounded-2xl border border-brand-soft bg-brand-softer p-5">
       <div className="flex items-center gap-2">
@@ -68,10 +82,10 @@ export function AIDiagnosisCard({ demoCase }: { demoCase: DemoCase }) {
         Failure class · {demoCase.failureClass}
       </p>
       <p className="mt-2 text-xs leading-6 text-foreground">{demoCase.diagnosis}</p>
-      <p className="mt-4 text-[11px] font-semibold text-muted-foreground">Evidence</p>
+      <p className="mt-4 text-[11px] font-semibold text-muted-foreground">Provider Evidence</p>
       <ul className="mt-1.5 space-y-1">
-        {DIAGNOSIS_EVIDENCE.map((e) => (
-          <li key={e} className="flex items-center gap-2 text-xs text-muted-foreground">
+        {displayEvidence.map((e, idx) => (
+          <li key={idx} className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="h-1 w-1 rounded-full bg-brand" /> {e}
           </li>
         ))}
@@ -81,7 +95,7 @@ export function AIDiagnosisCard({ demoCase }: { demoCase: DemoCase }) {
         <span className="text-xs font-bold text-brand">{demoCase.recoveryStrategy}</span>
       </div>
       <p className="mt-3 text-[11px] text-muted-foreground">
-        AI recommends. It does not authorize money.
+        AI recommends strategy. Deterministic code authorizes financial execution.
       </p>
     </section>
   );

@@ -11,9 +11,8 @@ import {
 } from "lucide-react";
 import { DemoButton, DemoMetric, Panel } from "@/components/demo/ui";
 import { DemoCaseRow } from "@/components/demo/proof";
-import { useDemoStore } from "@/lib/demo/store";
 import { formatINR } from "@/lib/demo/types";
-import { getMetricsFn } from "@/lib/api/server-fns";
+import { getMetricsFn, getCasesListFn } from "@/lib/api/server-fns";
 
 const title = "Recover — AI revenue recovery for failed payments";
 const description =
@@ -48,7 +47,8 @@ const flow = [
 
 function DemoWelcome() {
   const navigate = useNavigate();
-  const { cases } = useDemoStore();
+  const [cases, setCases] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   const [serverMetrics, setServerMetrics] = useState<{
     casesCount: number;
     totalAtRiskMinor: number;
@@ -57,17 +57,49 @@ function DemoWelcome() {
   } | null>(null);
 
   useEffect(() => {
-    getMetricsFn()
-      .then((m) => setServerMetrics(m))
-      .catch(() => {});
+    Promise.all([getMetricsFn(), getCasesListFn()])
+      .then(([metrics, caseList]) => {
+        setServerMetrics(metrics);
+        setCases(caseList || []);
+      })
+      .catch((err) => console.error("[Overview Error]:", err))
+      .finally(() => setLoading(false));
   }, []);
 
-  const atRisk = serverMetrics?.totalAtRiskMinor ?? cases.reduce((sum, c) => sum + c.amountMinor, 0);
-  const recovered = serverMetrics?.totalRecoveredMinor ?? cases
-    .filter((c) => c.state === "RECOVERED_VERIFIED")
-    .reduce((sum, c) => sum + c.amountMinor, 0);
-  const rate = serverMetrics?.recoveryRate ?? (atRisk ? Math.round((recovered / atRisk) * 100) : 0);
+  const atRisk = serverMetrics?.totalAtRiskMinor ?? 0;
+  const recovered = serverMetrics?.totalRecoveredMinor ?? 0;
+  const rate = serverMetrics?.recoveryRate ?? 0;
   const hasCases = (serverMetrics?.casesCount ?? cases.length) > 0;
+
+  const adaptedCases = cases.map((c) => ({
+    caseId: c.case_number,
+    orderId: c.original_order_id,
+    originalPaymentId: c.original_payment_id,
+    amountMinor: Number(c.amount_minor),
+    currency: c.currency,
+    paymentStatus: c.status,
+    failureReason: c.failure_reason,
+    failureDetail: c.failure_detail,
+    method: c.method || "UPI",
+    failedAt: c.failed_at ? new Date(c.failed_at).toLocaleTimeString() : null,
+    confidence: c.recovery_diagnoses?.[0]?.confidence ? Math.round(Number(c.recovery_diagnoses[0].confidence) * 100) : 0,
+    failureClass: c.recovery_diagnoses?.[0]?.failure_class || "UNKNOWN",
+    diagnosis: c.recovery_diagnoses?.[0]?.summary || "",
+    recoveryStrategy: c.action_authorizations?.[0]?.strategy || "FRESH_CHECKOUT",
+    gateChecks: [],
+    recoveryReference: c.recovery_actions?.[0]?.reference_id || "",
+    recoveryLinkId: c.recovery_actions?.[0]?.payment_link_id || "",
+    recoveryPaymentId: c.recovery_actions?.[0]?.recovery_payment_id || "",
+    verificationChecks: [],
+    state: c.terminal_status || c.status,
+    events: [],
+    customer: {
+      name: c.customer_name || "Customer",
+      email: c.customer_email || "customer@example.com",
+      purpose: "Payment Recovery",
+    },
+    description: c.description || "Recover Case",
+  }));
 
   return (
     <main className="mx-auto w-full max-w-6xl px-6 py-12">
@@ -136,22 +168,22 @@ function DemoWelcome() {
       ) : (
         <>
           <div className="mt-10 flex items-center gap-3">
-            <h2 className="text-sm font-bold text-foreground">Recovery overview</h2>
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold tracking-wide text-muted-foreground uppercase">
-              Demo data
+            <h2 className="text-sm font-bold text-foreground">Recovery Overview</h2>
+            <span className="rounded-full bg-brand-softer px-2 py-0.5 text-[10px] font-bold tracking-wide text-brand uppercase">
+              Supabase Database
             </span>
           </div>
 
           <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <DemoMetric label="Recovery cases" value={String(cases.length)} />
+            <DemoMetric label="Recovery cases" value={String(serverMetrics?.casesCount ?? 0)} />
             <DemoMetric label="Revenue at risk" value={formatINR(atRisk)} tone="danger" />
             <DemoMetric label="Recovered" value={formatINR(recovered)} tone="success" />
             <DemoMetric label="Recovery rate" value={`${rate}%`} tone="brand" />
           </div>
 
           <div className="mt-6 space-y-3">
-            {cases.map((c) => (
-              <DemoCaseRow key={c.caseId} demoCase={c} />
+            {adaptedCases.map((c) => (
+              <DemoCaseRow key={c.caseId} demoCase={c as any} />
             ))}
             <div className="flex flex-wrap gap-3 pt-2">
               <DemoButton onClick={() => navigate({ to: "/demo/create" })}>
@@ -161,7 +193,7 @@ function DemoWelcome() {
                 to="/demo/history"
                 className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-5 py-2.5 text-sm font-semibold text-foreground transition-colors hover:bg-muted"
               >
-                View demo history
+                View case history
               </Link>
             </div>
           </div>

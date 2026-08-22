@@ -12,7 +12,7 @@ export function VerificationProgress({
   completed: number;
 }) {
   return (
-    <Panel title="Independent verification">
+    <Panel title="Independent Canonical Verification">
       <ul>
         {checks.map((c, i) => (
           <StepRow
@@ -27,33 +27,24 @@ export function VerificationProgress({
   );
 }
 
-const RECEIPT_CHECKLIST = [
-  "recovery checkout exists",
-  "recovery amount matches",
-  "payment completed",
-  "payment amount exact",
-  "no unresolved duplicate collection",
-  "recovery receipt generated",
-];
-
 export function VerificationReceipt({ demoCase }: { demoCase: DemoCase }) {
   const rows: [string, string][] = [
-    ["Original payment", demoCase.originalPaymentId],
+    ["Original payment", demoCase.originalPaymentId || "—"],
     ["Original amount", formatINR(demoCase.amountMinor)],
     ["Original state", "FAILED"],
     ["Recovery action", "Fresh Checkout"],
-    ["Recovery reference", demoCase.recoveryReference],
-    ["Recovery payment", demoCase.recoveryPaymentId],
+    ["Recovery reference", demoCase.recoveryReference || "—"],
+    ["Recovery payment", demoCase.recoveryPaymentId || "—"],
     ["Recovered amount", formatINR(demoCase.amountMinor)],
     ["Recovery status", "CAPTURED"],
-    ["Verification", "PASSED"],
+    ["Verification outcome", "RECOVERED_VERIFIED"],
   ];
 
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
       <div className="border-b border-dashed border-border bg-brand-softer px-6 py-5">
         <p className="text-base font-bold tracking-tight text-foreground">RECOVERED — VERIFIED</p>
-        <p className="mt-0.5 text-xs text-muted-foreground">Independent recovery receipt</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">Canonical Provider Receipt (Razorpay Test Mode)</p>
       </div>
       <div className="px-6 py-2">
         {rows.map(([label, value]) => (
@@ -70,7 +61,13 @@ export function VerificationReceipt({ demoCase }: { demoCase: DemoCase }) {
       </div>
       <div className="border-t border-dashed border-border px-6 py-4">
         <ul className="grid gap-1.5 sm:grid-cols-2">
-          {RECEIPT_CHECKLIST.map((c) => (
+          {[
+            "Recovery Payment Link verified",
+            "Exact recovered amount matched",
+            "Payment captured at gateway",
+            "No duplicate collection verified",
+            "Immutable audit receipt generated",
+          ].map((c) => (
             <li key={c} className="flex items-center gap-2 text-xs text-muted-foreground">
               <Check className="h-3.5 w-3.5 text-success" strokeWidth={3} /> {c}
             </li>
@@ -78,7 +75,7 @@ export function VerificationReceipt({ demoCase }: { demoCase: DemoCase }) {
         </ul>
       </div>
       <div className="flex items-center justify-between border-t border-border px-6 py-4">
-        <span className="text-[11px] text-muted-foreground">Demo receipt · {demoCase.caseId}</span>
+        <span className="text-[11px] text-muted-foreground">Audit receipt · {demoCase.caseId}</span>
         <span className="inline-flex items-center gap-1.5 rounded-full border border-success-soft bg-success-soft px-3 py-1 text-[11px] font-bold tracking-wide text-success uppercase">
           <ShieldCheck className="h-3.5 w-3.5" /> Verified
         </span>
@@ -124,7 +121,7 @@ export function RecoveryTimelineDrawer({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-md">
         <SheetHeader>
-          <SheetTitle className="text-base">Recovery timeline</SheetTitle>
+          <SheetTitle className="text-base">Recovery Audit Timeline</SheetTitle>
         </SheetHeader>
         <ol className="mt-4 space-y-3 px-4 pb-8">
           {demoCase.events.map((e, i) => (
@@ -158,30 +155,26 @@ export function DemoCaseRow({ demoCase }: { demoCase: DemoCase }) {
           value={<span className="text-xs font-semibold">FRESH_CHECKOUT</span>}
         />
         <Cell
-          label="Amount"
+          label="Outcome"
           value={
-            <span className="text-xs font-semibold">{formatINR(demoCase.amountMinor)}</span>
+            <span
+              className={
+                "text-xs font-bold " + (verified ? "text-success" : "text-muted-foreground")
+              }
+            >
+              {demoCase.state}
+            </span>
           }
         />
         <Cell
-          label="Status"
-          value={
-            <PaymentStatusBadge
-              status={
-                verified
-                  ? "RECOVERED — VERIFIED"
-                  : demoCase.state === "MANUAL_REVIEW"
-                    ? "MANUAL REVIEW"
-                    : "IN PROGRESS"
-              }
-            />
-          }
+          label="Amount"
+          value={<span className="text-xs font-bold">{formatINR(demoCase.amountMinor)}</span>}
         />
       </div>
       <Link
         to="/demo/payment/$id"
         params={{ id: demoCase.caseId }}
-        className="inline-flex items-center justify-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-muted"
+        className="inline-flex items-center gap-1 text-xs font-bold text-brand hover:underline"
       >
         View Case <ArrowRight className="h-3.5 w-3.5" />
       </Link>

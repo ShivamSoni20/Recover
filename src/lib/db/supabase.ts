@@ -1,21 +1,46 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-const supabaseUrl = process.env.SUPABASE_URL || "";
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "";
+let serverSupabaseInstance: SupabaseClient | null = null;
 
-if (!supabaseUrl && process.env.NODE_ENV !== "test") {
-  console.warn("[Supabase] Warning: SUPABASE_URL is not set.");
-}
+export function getServerSupabase(): SupabaseClient {
+  if (serverSupabaseInstance) {
+    return serverSupabaseInstance;
+  }
 
-export const supabase = createClient(
-  supabaseUrl || "https://placeholder-url.supabase.co",
-  supabaseServiceKey || "placeholder-key",
-  {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    if (process.env.NODE_ENV === "test") {
+      // In test mode, fallback to placeholder if mocked
+      return createClient("https://placeholder-test.supabase.co", "placeholder-key", {
+        auth: { persistSession: false },
+      });
+    }
+    throw new Error(
+      "[Supabase Security Gate] Fail-closed: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are mandatory for trusted backend database operations."
+    );
+  }
+
+  serverSupabaseInstance = createClient(supabaseUrl, serviceRoleKey, {
     auth: {
       persistSession: false,
+      autoRefreshToken: false,
     },
-  }
-);
+  });
+
+  return serverSupabaseInstance;
+}
+
+// Export default server client instance (fails closed if unconfigured)
+export const supabase = {
+  from(table: string) {
+    return getServerSupabase().from(table);
+  },
+  rpc(fn: string, args: Record<string, unknown>) {
+    return getServerSupabase().rpc(fn, args);
+  },
+};
