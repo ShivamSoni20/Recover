@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import {
   ArrowRight,
@@ -12,8 +13,9 @@ import { DemoButton, DemoMetric, Panel } from "@/components/demo/ui";
 import { DemoCaseRow } from "@/components/demo/proof";
 import { useDemoStore } from "@/lib/demo/store";
 import { formatINR } from "@/lib/demo/types";
+import { getMetricsFn } from "@/lib/api/server-fns";
 
-const title = "Recover Demo — watch a failed payment get recovered";
+const title = "Recover — AI revenue recovery for failed payments";
 const description =
   "Create your own test payment, fail it deliberately, and watch Recover diagnose, authorize, recover and independently verify it.";
 
@@ -47,13 +49,25 @@ const flow = [
 function DemoWelcome() {
   const navigate = useNavigate();
   const { cases } = useDemoStore();
+  const [serverMetrics, setServerMetrics] = useState<{
+    casesCount: number;
+    totalAtRiskMinor: number;
+    totalRecoveredMinor: number;
+    recoveryRate: number;
+  } | null>(null);
 
-  const atRisk = cases.reduce((sum, c) => sum + c.amountMinor, 0);
-  const recovered = cases
+  useEffect(() => {
+    getMetricsFn()
+      .then((m) => setServerMetrics(m))
+      .catch(() => {});
+  }, []);
+
+  const atRisk = serverMetrics?.totalAtRiskMinor ?? cases.reduce((sum, c) => sum + c.amountMinor, 0);
+  const recovered = serverMetrics?.totalRecoveredMinor ?? cases
     .filter((c) => c.state === "RECOVERED_VERIFIED")
     .reduce((sum, c) => sum + c.amountMinor, 0);
-  const rate = atRisk ? Math.round((recovered / atRisk) * 100) : 0;
-  const hasCases = cases.length > 0;
+  const rate = serverMetrics?.recoveryRate ?? (atRisk ? Math.round((recovered / atRisk) * 100) : 0);
+  const hasCases = (serverMetrics?.casesCount ?? cases.length) > 0;
 
   return (
     <main className="mx-auto w-full max-w-6xl px-6 py-12">

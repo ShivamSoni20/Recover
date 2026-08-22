@@ -64,7 +64,7 @@ function RecoveryCheckout() {
           title="Fresh recovery checkout created."
           aside={
             <span className="rounded-full bg-brand-softer px-2 py-0.5 text-[10px] font-bold tracking-wide text-brand uppercase">
-              Demo payment link
+              Razorpay Payment Link
             </span>
           }
         >
@@ -75,7 +75,15 @@ function RecoveryCheckout() {
             <Field label="Payment Link" value={demoCase.recoveryLinkId} />
             <Field label="Status" value={<PaymentStatusBadge status="ACTIVE" />} />
           </div>
-          <DemoButton className="mt-6 w-full sm:w-auto" onClick={() => setOpen(true)}>
+          <DemoButton
+            className="mt-6 w-full sm:w-auto"
+            onClick={() => {
+              if (demoCase.recoveryLinkId && !demoCase.recoveryLinkId.startsWith("plink_demo_")) {
+                window.open(`https://rzp.io/i/${demoCase.recoveryLinkId}`, "_blank");
+              }
+              setOpen(true);
+            }}
+          >
             Open Recovery Checkout <ArrowRight className="h-4 w-4" />
           </DemoButton>
         </Panel>

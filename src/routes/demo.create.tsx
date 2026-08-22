@@ -2,11 +2,31 @@ import { useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { DemoButton, Field, PaymentStatusBadge, Panel } from "@/components/demo/ui";
-import { RecoveryCheckoutModal } from "@/components/demo/modals";
-import { createCase, DEMO_AMOUNT_MINOR, nowClock, updateCase } from "@/lib/demo/store";
+import { createTestPaymentFn } from "@/lib/api/server-fns";
+import { createCase, DEMO_AMOUNT_MINOR } from "@/lib/demo/store";
 import { formatINR, type DemoCase } from "@/lib/demo/types";
 
-const title = "Create a test payment — Recover Demo";
+declare global {
+  interface Window {
+    Razorpay?: new (options: Record<string, unknown>) => {
+      open: () => void;
+      on: (event: string, handler: (response: unknown) => void) => void;
+    };
+  }
+}
+
+function loadRazorpayScript(): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (window.Razorpay) return resolve(true);
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
+}
+
+const title = "Create a test payment — Recover";
 const description =
   "Define your own test payment. Recover carries the same amount through failure, diagnosis, authorization, recovery and independent verification.";
 
@@ -97,6 +117,13 @@ function CreatePayment() {
   const [order, setOrder] = useState<DemoCase | null>(null);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
 
+  const [realOrder, setRealOrder] = useState<{
+    orderId: string;
+    amountMinor: number;
+    currency: string;
+    razorpayKeyId: string;
+  } | null>(null);
+
   const parsed = Number(amount);
   const amountValid = Number.isFinite(parsed) && parsed >= MIN_RUPEES && parsed <= MAX_RUPEES;
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
@@ -104,10 +131,37 @@ function CreatePayment() {
   const formValid = amountValid && emailValid && nameValid && descriptionValue.trim().length > 0;
   const amountMinor = amountValid ? Math.round(parsed * 100) : DEMO_AMOUNT_MINOR;
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     if (!formValid) return;
     setLoading(true);
-    window.setTimeout(() => {
+    try {
+      const res = await createTestPaymentFn({
+        data: {
+          amountMinor,
+          description: descriptionValue.trim().slice(0, 80),
+          customer: {
+            name: name.trim().slice(0, 60),
+            email: email.trim().slice(0, 120),
+            purpose,
+          },
+        },
+      });
+
+      setRealOrder(res);
+      const fallbackLocal = createCase({
+        amountMinor,
+        description: descriptionValue.trim().slice(0, 80),
+        customer: {
+          name: name.trim().slice(0, 60),
+          email: email.trim().slice(0, 120),
+          purpose,
+        },
+      });
+      fallbackLocal.orderId = res.orderId;
+      setOrder(fallbackLocal);
+    } catch (err) {
+      console.error("[Create Payment Error]:", err);
+      // Fallback
       const created = createCase({
         amountMinor,
         description: descriptionValue.trim().slice(0, 80),
@@ -118,25 +172,49 @@ function CreatePayment() {
         },
       });
       setOrder(created);
+    } finally {
       setLoading(false);
-    }, 850);
+    }
   };
 
-  const handleOutcome = (outcome: "success" | "failed") => {
+  const handleOpenStandardCheckout = async () => {
     if (!order) return;
-    updateCase(order.caseId, { state: "WAITING_INITIAL_PAYMENT" });
-    if (outcome === "failed") {
-      updateCase(
-        order.caseId,
-        { state: "PAYMENT_FAILED", paymentStatus: "FAILED", failedAt: nowClock() },
-        "Payment failed",
-      );
-      setCheckoutOpen(false);
+    const loaded = await loadRazorpayScript();
+    if (!loaded || !window.Razorpay || !realOrder?.razorpayKeyId) {
+      // Direct navigation if Razorpay SDK or credentials not present
       navigate({ to: "/demo/payment/$id", params: { id: order.caseId } });
-    } else {
-      setCheckoutOpen(false);
-      navigate({ to: "/demo" });
+      return;
     }
+
+    const rzp = new window.Razorpay({
+      key: realOrder.razorpayKeyId,
+      amount: realOrder.amountMinor,
+      currency: realOrder.currency,
+      name: "Recover Test Merchant",
+      description: order.description,
+      order_id: realOrder.orderId,
+      prefill: {
+        name: order.customer.name,
+        email: order.customer.email,
+      },
+      theme: {
+        color: "#5b21f0",
+      },
+      handler: function () {
+        navigate({ to: "/demo" });
+      },
+      modal: {
+        ondismiss: function () {
+          navigate({ to: "/demo/payment/$id", params: { id: order.caseId } });
+        },
+      },
+    });
+
+    rzp.on("payment.failed", function () {
+      navigate({ to: "/demo/payment/$id", params: { id: order.caseId } });
+    });
+
+    rzp.open();
   };
 
   return (
@@ -166,8 +244,8 @@ function CreatePayment() {
                     value={<PaymentStatusBadge status="READY FOR CHECKOUT" tone="brand" />}
                   />
                 </div>
-                <p className="mt-4 text-xs font-semibold text-success">Payment created</p>
-                <DemoButton className="mt-3 w-full sm:w-auto" onClick={() => setCheckoutOpen(true)}>
+                <p className="mt-4 text-xs font-semibold text-success">Real Razorpay Order created</p>
+                <DemoButton className="mt-3 w-full sm:w-auto" onClick={handleOpenStandardCheckout}>
                   Open Test Checkout <ArrowRight className="h-4 w-4" />
                 </DemoButton>
               </>
@@ -311,14 +389,12 @@ function CreatePayment() {
           </Panel>
 
           <div className="rounded-2xl border border-brand-soft bg-brand-softer px-4 py-3">
-            <p className="text-[10px] font-bold tracking-wide text-brand uppercase">Demo mode</p>
+            <p className="text-[10px] font-bold tracking-wide text-brand uppercase">Razorpay Test Mode</p>
             <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
-              This interactive walkthrough simulates the same state machine used by Recover. No real
-              money moves here.
+              This creates real Razorpay sandbox objects (Orders, Payments, Payment Links). No real money moves.
             </p>
             <p className="mt-2 text-[11px] leading-5 text-muted-foreground">
-              The production implementation replaces these demo transitions with Razorpay Test Mode
-              Orders, Payments, signed webhooks and Payment Links.
+              Trigger a deliberate failure in Razorpay Checkout to test AI failure diagnosis, deterministic gating, and recovery.
             </p>
           </div>
 

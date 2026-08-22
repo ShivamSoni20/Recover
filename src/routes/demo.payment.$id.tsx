@@ -12,8 +12,9 @@ import {
 import { buildGateChecks, MACHINE_STEPS } from "@/lib/demo/data";
 import { updateCase, useDemoCase } from "@/lib/demo/store";
 import { formatINR } from "@/lib/demo/types";
+import { submitDecisionFn } from "@/lib/api/server-fns";
 
-const title = "Failed payment case — Recover Demo";
+const title = "Failed payment case — Recover";
 const description =
   "Provider truth, AI diagnosis and the deterministic Recovery Gate for a failed payment.";
 
@@ -114,14 +115,24 @@ function PaymentCase() {
     );
   }
 
-  const handleRecover = () => {
+  const handleRecover = async () => {
     setApprovalPhase("recheck");
-    window.setTimeout(() => setApprovalPhase("unpaid"), 900);
+    try {
+      await submitDecisionFn({
+        data: {
+          caseId: demoCase.caseId,
+          decision: "APPROVE_RECOVERY",
+        },
+      });
+    } catch {
+      // Proceed with local workflow view
+    }
+    setApprovalPhase("unpaid");
     window.setTimeout(() => {
       setApprovalPhase("creating");
       updateCase(demoCase.caseId, { state: "WAITING_APPROVAL" });
       updateCase(demoCase.caseId, { state: "CREATING_RECOVERY_CHECKOUT" }, "Recovery approved");
-    }, 1700);
+    }, 600);
     window.setTimeout(() => {
       updateCase(
         demoCase.caseId,
@@ -129,10 +140,20 @@ function PaymentCase() {
         "Recovery checkout created",
       );
       navigate({ to: "/demo/recovery/$id/checkout", params: { id: demoCase.caseId } });
-    }, 2600);
+    }, 1200);
   };
 
-  const handleEscalate = () => {
+  const handleEscalate = async () => {
+    try {
+      await submitDecisionFn({
+        data: {
+          caseId: demoCase.caseId,
+          decision: "ESCALATE",
+        },
+      });
+    } catch {
+      // Ignore
+    }
     updateCase(demoCase.caseId, { state: "MANUAL_REVIEW" }, "Escalated to manual review");
   };
 

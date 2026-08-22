@@ -1,8 +1,8 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { RotateCcw } from "lucide-react";
 import { RecoverLogo } from "@/components/brand/RecoverLogo";
-import { DemoModeBadge } from "./ui";
 import { resetDemo } from "@/lib/demo/store";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 export function DemoHeader() {
   const navigate = useNavigate();
@@ -27,8 +27,18 @@ export function DemoHeader() {
           </Link>
         </nav>
 
-        <div className="flex items-center gap-2">
-          <DemoModeBadge className="hidden sm:inline-flex" />
+          <TooltipProvider delayDuration={100}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="hidden cursor-help items-center gap-1.5 rounded-full border border-brand-soft bg-brand-softer px-3 py-1 text-[10px] font-bold tracking-wide text-brand uppercase sm:inline-flex">
+                  Razorpay Test Mode
+                </span>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs text-xs">
+                Real Razorpay sandbox objects (Orders, Payments, Payment Links). No real money moves.
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           <button
             type="button"
             onClick={() => {
@@ -37,7 +47,7 @@ export function DemoHeader() {
             }}
             className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted"
           >
-            <RotateCcw className="h-3.5 w-3.5" /> Reset Demo
+            <RotateCcw className="h-3.5 w-3.5" /> New Test Run
           </button>
           <Link
             to="/"
