@@ -19,7 +19,7 @@ async function getServerEntry(): Promise<ServerEntry> {
 }
 
 // h3 swallows in-handler throws into a normal 500 Response with body
-// {"unhandled":true,"message":"HTTPError"} — try/catch alone never fires for those.
+// {"unhandled":true,"message":"HTTPError"} - try/catch alone never fires for those.
 async function normalizeCatastrophicSsrResponse(response: Response): Promise<Response> {
   if (response.status < 500) return response;
   const contentType = response.headers.get("content-type") ?? "";
@@ -99,6 +99,7 @@ export default {
           });
         }
 
+        // 1. payment.failed -> Canonical verification & recovery case creation
         if (eventType === "payment.failed") {
           const paymentEntity = payload.payload?.payment?.entity;
           if (paymentEntity?.id) {
@@ -110,11 +111,12 @@ export default {
           }
         }
 
+        // 2. payment_link.paid & payment.captured -> Recovery action fulfillment
         if (eventType === "payment_link.paid" || eventType === "payment.captured") {
           const paymentEntity = payload.payload?.payment?.entity;
           const linkEntity = payload.payload?.payment_link?.entity;
 
-          const paymentLinkId = linkEntity?.id;
+          const paymentLinkId = linkEntity?.id || paymentEntity?.notes?.payment_link_id;
           const paymentId = paymentEntity?.id;
 
           if (paymentLinkId) {
@@ -140,6 +142,36 @@ export default {
                 amountMinor: paymentEntity?.amount || 0,
               });
             }
+          }
+        }
+
+        // 3. payment_link.cancelled -> Update recovery action status
+        if (eventType === "payment_link.cancelled") {
+          const linkEntity = payload.payload?.payment_link?.entity;
+          const paymentLinkId = linkEntity?.id;
+          if (paymentLinkId) {
+            await supabase
+              .from("recovery_actions")
+              .update({
+                status: "CANCELLED",
+                updated_at: new Date().toISOString(),
+              })
+              .eq("payment_link_id", paymentLinkId);
+          }
+        }
+
+        // 4. order.paid -> Update test payment session status
+        if (eventType === "order.paid") {
+          const orderEntity = payload.payload?.order?.entity;
+          const orderId = orderEntity?.id;
+          if (orderId) {
+            await supabase
+              .from("test_payment_sessions")
+              .update({
+                status: "PAID",
+                updated_at: new Date().toISOString(),
+              })
+              .eq("order_id", orderId);
           }
         }
 
