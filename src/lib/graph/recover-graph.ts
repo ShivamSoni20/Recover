@@ -120,12 +120,21 @@ export async function retrieveKnowledgeNode(state: RecoverState): Promise<Partia
 
   const chunks = await retrieveRecoveryKnowledge(query, 3);
 
-  await supabase.from("case_events").insert({
-    case_id: state.caseId,
-    event_type: "KNOWLEDGE_RETRIEVED",
-    label: "RAG knowledge retrieved",
-    data: { chunksCount: chunks.length },
-  });
+  if (chunks.length > 0) {
+    await supabase.from("case_events").insert({
+      case_id: state.caseId,
+      event_type: "KNOWLEDGE_RETRIEVED",
+      label: `Retrieved ${chunks.length} runbook knowledge chunks`,
+      data: { chunksCount: chunks.length, sources: chunks.map((c) => c.source) },
+    });
+  } else {
+    await supabase.from("case_events").insert({
+      case_id: state.caseId,
+      event_type: "KNOWLEDGE_RETRIEVAL_EMPTY",
+      label: "No specific runbook chunks matched; using provider facts only",
+      data: { chunksCount: 0 },
+    });
+  }
 
   return { retrievedKnowledge: chunks };
 }
@@ -136,9 +145,10 @@ export async function retrieveKnowledgeNode(state: RecoverState): Promise<Partia
 export async function diagnoseFailureNode(state: RecoverState): Promise<Partial<RecoverState>> {
   await updateCaseStatus(state.caseId, "DIAGNOSING");
   const payment = state.canonicalPayment;
-  const knowledgeText = state.retrievedKnowledge
-    .map((k) => `[Source: ${k.source}] ${k.content}`)
-    .join("\n\n");
+  const hasKnowledge = state.retrievedKnowledge && state.retrievedKnowledge.length > 0;
+  const knowledgeText = hasKnowledge
+    ? state.retrievedKnowledge.map((k) => `[Source: ${k.source}] ${k.content}`).join("\n\n")
+    : "NO RETRIEVED KNOWLEDGE WAS AVAILABLE. Use provider facts only. Do not claim any knowledge source was retrieved.";
 
   const prompt = `You are the AI Financial Failure Diagnostician for Recover.
 Analyze the following payment failure strictly using provided provider facts and retrieved knowledge.
@@ -155,21 +165,27 @@ Provider Failure Facts:
 - Error Reason: ${payment?.errorReason || "N/A"}
 
 Retrieved Knowledge:
-${knowledgeText || "Standard Razorpay failure runbook applies."}
+${knowledgeText}
 `;
 
   const model = getRecoverModel({ temperature: 0 });
   const structuredModel = model.withStructuredOutput(DiagnosisOutputSchema);
   const diagnosis = await structuredModel.invoke(prompt);
 
-  await supabase.from("recovery_diagnoses").insert({
+  const knowledgeRefs = hasKnowledge ? diagnosis.knowledgeRefs : [];
+
+  const { error: diagError } = await supabase.from("recovery_diagnoses").insert({
     case_id: state.caseId,
     failure_class: diagnosis.failureClass,
     confidence: diagnosis.confidence,
     evidence_fields: diagnosis.evidenceFields,
-    knowledge_refs: diagnosis.knowledgeRefs,
+    knowledge_refs: knowledgeRefs,
     summary: diagnosis.summary,
   });
+
+  if (diagError) {
+    throw new Error(`[Diagnosis Persistence Error]: ${diagError.message}`);
+  }
 
   await supabase.from("case_events").insert({
     case_id: state.caseId,
@@ -178,7 +194,7 @@ ${knowledgeText || "Standard Razorpay failure runbook applies."}
     data: { failureClass: diagnosis.failureClass, confidence: diagnosis.confidence },
   });
 
-  return { diagnosis };
+  return { diagnosis: { ...diagnosis, knowledgeRefs } };
 }
 
 // ----------------------------------------------------------------------------
@@ -250,7 +266,7 @@ export async function recoveryGateNode(state: RecoverState): Promise<Partial<Rec
     },
   });
 
-  const { data: authRecord } = await supabase
+  const { data: authRecord, error: authError } = await supabase
     .from("action_authorizations")
     .insert({
       case_id: state.caseId,
@@ -266,6 +282,10 @@ export async function recoveryGateNode(state: RecoverState): Promise<Partial<Rec
     })
     .select("id")
     .single();
+
+  if (authError || !authRecord) {
+    throw new Error(`[Authorization Persistence Error]: ${authError?.message || "Insert failed"}`);
+  }
 
   await supabase.from("case_events").insert({
     case_id: state.caseId,
@@ -380,10 +400,11 @@ export async function createRecoveryLinkNode(state: RecoverState): Promise<Parti
   const referenceId = state.action?.referenceId || `rcv_${state.caseId.slice(0, 8)}_1`;
 
   // 1. Create durable intent record before external network call
-  const { data: actionRow } = await supabase
+  const { data: actionRow, error: intentError } = await supabase
     .from("recovery_actions")
     .upsert({
       case_id: state.caseId,
+      authorization_id: state.action?.actionId,
       reference_id: referenceId,
       amount_minor: state.gate!.exactAmountMinor,
       currency: state.gate!.currency,
@@ -391,6 +412,10 @@ export async function createRecoveryLinkNode(state: RecoverState): Promise<Parti
     }, { onConflict: "reference_id" })
     .select("id")
     .single();
+
+  if (intentError) {
+    throw new Error(`[Action Intent Error]: ${intentError.message}`);
+  }
 
   try {
     const link = await createRecoveryPaymentLink({
@@ -531,29 +556,41 @@ export async function handleOriginalLateCaptureNode(state: RecoverState): Promis
 }
 
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // 13. verify_recovery (Canonical Verification against Provider)
 // ----------------------------------------------------------------------------
 export async function verifyRecoveryNode(state: RecoverState): Promise<Partial<RecoverState>> {
   const action = state.action;
   const paymentId = action?.recoveryPaymentId;
-  if (!paymentId) throw new Error("Recovery payment ID missing during verification.");
+  const paymentLinkId = action?.paymentLinkId;
+
+  if (!paymentId || !paymentLinkId) {
+    throw new Error("Recovery payment ID or Payment Link ID missing during verification.");
+  }
 
   await updateCaseStatus(state.caseId, "VERIFYING");
   await supabase.from("case_events").insert({
     case_id: state.caseId,
     event_type: "VERIFICATION_STARTED",
-    label: "Independent verification running",
+    label: "Independent canonical verification running",
   });
 
   // Re-fetch canonical state independently from Razorpay
   const recoveryPayment = await fetchRazorpayPayment(paymentId);
   const originalPayment = await fetchRazorpayPayment(state.originalPaymentId);
-  let linkPaid = true;
+  const recoveryLink = await fetchPaymentLink(paymentLinkId);
 
-  if (action?.paymentLinkId) {
-    const link = await fetchPaymentLink(action.paymentLinkId);
-    linkPaid = link.status === "paid";
+  // Fetch all original order payments to detect duplicate collection
+  let anyOtherOriginalPaymentCaptured = false;
+  if (originalPayment.order_id) {
+    const rawOrderPayments = await fetchPaymentsForOrder(originalPayment.order_id);
+    anyOtherOriginalPaymentCaptured = rawOrderPayments.some(
+      (p) => p.id !== recoveryPayment.id && (p.captured || p.status === "captured")
+    );
   }
+
+  const expectedAmount = state.gate!.exactAmountMinor;
+  const expectedCurrency = state.gate!.currency;
 
   const checks = [
     {
@@ -565,26 +602,32 @@ export async function verifyRecoveryNode(state: RecoverState): Promise<Partial<R
     {
       key: "payment_link_paid",
       expected: true,
-      observed: linkPaid,
-      passed: linkPaid,
+      observed: recoveryLink.status === "paid",
+      passed: recoveryLink.status === "paid",
+    },
+    {
+      key: "payment_link_reference_exact",
+      expected: action.referenceId,
+      observed: recoveryLink.reference_id,
+      passed: Boolean(action.referenceId && recoveryLink.reference_id === action.referenceId),
     },
     {
       key: "amount_exact",
-      expected: state.gate!.exactAmountMinor,
+      expected: expectedAmount,
       observed: recoveryPayment.amount,
-      passed: recoveryPayment.amount === state.gate!.exactAmountMinor,
+      passed: recoveryPayment.amount === expectedAmount,
     },
     {
       key: "currency_exact",
-      expected: state.gate!.currency,
+      expected: expectedCurrency,
       observed: recoveryPayment.currency,
-      passed: recoveryPayment.currency === state.gate!.currency,
+      passed: recoveryPayment.currency === expectedCurrency,
     },
     {
       key: "no_double_collection",
       expected: false,
-      observed: originalPayment.captured || originalPayment.status === "captured",
-      passed: !(originalPayment.captured || originalPayment.status === "captured"),
+      observed: anyOtherOriginalPaymentCaptured || originalPayment.captured || originalPayment.status === "captured",
+      passed: !anyOtherOriginalPaymentCaptured && !(originalPayment.captured || originalPayment.status === "captured"),
     },
   ];
 
@@ -597,17 +640,26 @@ export async function verifyRecoveryNode(state: RecoverState): Promise<Partial<R
       ? "DOUBLE_PAYMENT_RISK"
       : "FAILED";
 
-  await supabase.from("verification_receipts").insert({
-    case_id: state.caseId,
-    original_order_id: state.originalOrderId || "unknown",
-    original_payment_id: state.originalPaymentId,
-    recovery_link_id: action?.paymentLinkId || "unknown",
-    recovery_payment_id: paymentId,
-    amount_minor: recoveryPayment.amount,
-    currency: recoveryPayment.currency,
-    checks_passed: checks,
-    status: receiptStatus,
-  });
+  // Idempotent upsert on verification_receipts by case_id
+  const { error: receiptError } = await supabase.from("verification_receipts").upsert(
+    {
+      case_id: state.caseId,
+      original_order_id: state.originalOrderId || "unknown",
+      original_payment_id: state.originalPaymentId,
+      recovery_link_id: paymentLinkId,
+      recovery_payment_id: paymentId,
+      amount_minor: recoveryPayment.amount,
+      currency: recoveryPayment.currency,
+      checks_passed: checks,
+      status: receiptStatus,
+      verified_at: new Date().toISOString(),
+    },
+    { onConflict: "case_id" }
+  );
+
+  if (receiptError) {
+    throw new Error(`[Verification Receipt Persistence Error]: ${receiptError.message}`);
+  }
 
   const terminalStatus = allPassed
     ? "RECOVERED_VERIFIED"

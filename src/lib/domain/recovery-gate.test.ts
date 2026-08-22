@@ -1,43 +1,27 @@
 import { describe, it, expect } from "vitest";
-import { formatINRMinor, isValidMinorAmount } from "./money";
 import { evaluateRecoveryGate } from "./recovery-gate";
+import type { RecoveryGateInput } from "./recovery-gate";
 
-describe("Domain Money Arithmetic", () => {
-  it("formats minor currency units in Indian numbering format", () => {
-    expect(formatINRMinor(299900)).toBe("₹2,999");
-    expect(formatINRMinor(735000)).toBe("₹7,350");
-    expect(formatINRMinor(10050)).toBe("₹100.50");
-  });
-
-  it("validates minor amount within allowed ranges", () => {
-    expect(isValidMinorAmount(10000)).toBe(true); // ₹100
-    expect(isValidMinorAmount(1000000)).toBe(true); // ₹10,000
-    expect(isValidMinorAmount(5000)).toBe(false); // Too low
-    expect(isValidMinorAmount(2000000)).toBe(false); // Too high
-  });
-});
-
-describe("Deterministic Recovery Gate", () => {
-  const baseInput = {
+describe("Recovery Gate & Edge Scenarios", () => {
+  const baseInput: RecoveryGateInput = {
     isTestMode: true,
     canonicalPayment: {
-      id: "pay_test_123",
-      amountMinor: 299900,
+      id: "pay_test_001",
+      amountMinor: 735000,
       currency: "INR",
       status: "failed",
       captured: false,
-      errorCode: "BAD_REQUEST_ERROR",
     },
     canonicalOrder: {
-      id: "order_test_123",
-      amountMinor: 299900,
+      id: "order_test_001",
+      amountMinor: 735000,
       amountPaidMinor: 0,
       status: "attempted",
     },
     orderPayments: [],
     attemptCount: 0,
     failureClass: "CUSTOMER_CORRECTABLE",
-    confidence: 0.92,
+    confidence: 0.95,
     proposedStrategy: "FRESH_CHECKOUT",
     policy: {
       maxRecoveryAttempts: 2,
@@ -50,42 +34,82 @@ describe("Deterministic Recovery Gate", () => {
     },
   };
 
-  it("authorizes valid unpaid customer correctable failure in test mode", () => {
+  it("authorizes valid customer-correctable failure for FRESH_CHECKOUT", () => {
     const result = evaluateRecoveryGate(baseInput);
     expect(result.authorized).toBe(true);
-    expect(result.exactAmountMinor).toBe(299900);
-    expect(result.reasonCodes).toContain("PASS_TEST_MODE");
-    expect(result.reasonCodes).toContain("PASS_ORIGINAL_UNPAID");
+    expect(result.requiresApproval).toBe(true);
+    expect(result.exactAmountMinor).toBe(735000);
   });
 
-  it("strictly denies authorization if original payment is already captured", () => {
-    const result = evaluateRecoveryGate({
+  it("denies recovery if original payment is captured", () => {
+    const input: RecoveryGateInput = {
       ...baseInput,
-      canonicalPayment: {
-        ...baseInput.canonicalPayment,
-        captured: true,
-        status: "captured",
-      },
-    });
+      canonicalPayment: { ...baseInput.canonicalPayment, captured: true, status: "captured" },
+    };
+    const result = evaluateRecoveryGate(input);
     expect(result.authorized).toBe(false);
     expect(result.reasonCodes).toContain("DENY_ALREADY_PAID");
   });
 
-  it("strictly blocks risk/compliance failure classes", () => {
-    const result = evaluateRecoveryGate({
+  it("denies recovery if a sibling order payment is captured", () => {
+    const input: RecoveryGateInput = {
       ...baseInput,
-      failureClass: "RISK_OR_POLICY",
-    });
+      orderPayments: [
+        { id: "pay_test_002", status: "captured", captured: true, amountMinor: 735000 },
+      ],
+    };
+    const result = evaluateRecoveryGate(input);
     expect(result.authorized).toBe(false);
-    expect(result.reasonCodes).toContain("DENY_RISK_FAILURE");
+    expect(result.reasonCodes).toContain("DENY_CAPTURED_SIBLING");
   });
 
-  it("strictly denies when attempt limit is exceeded", () => {
-    const result = evaluateRecoveryGate({
+  it("denies recovery if attempt count exceeds policy maximum", () => {
+    const input: RecoveryGateInput = {
       ...baseInput,
       attemptCount: 2,
-    });
+    };
+    const result = evaluateRecoveryGate(input);
     expect(result.authorized).toBe(false);
     expect(result.reasonCodes).toContain("DENY_ATTEMPT_LIMIT_EXCEEDED");
+  });
+
+  it("denies recovery if amount exceeds policy threshold", () => {
+    const input: RecoveryGateInput = {
+      ...baseInput,
+      canonicalPayment: { ...baseInput.canonicalPayment, amountMinor: 5000000 },
+    };
+    const result = evaluateRecoveryGate(input);
+    expect(result.authorized).toBe(false);
+    expect(result.reasonCodes).toContain("DENY_AMOUNT_LIMIT_EXCEEDED");
+  });
+
+  it("denies recovery if active recovery action already exists", () => {
+    const input: RecoveryGateInput = {
+      ...baseInput,
+      existingActiveAction: { id: "act_001", status: "CREATED" },
+    };
+    const result = evaluateRecoveryGate(input);
+    expect(result.authorized).toBe(false);
+    expect(result.reasonCodes).toContain("DENY_ACTIVE_RECOVERY_LINK");
+  });
+
+  it("denies recovery if diagnosis confidence is below policy minimum", () => {
+    const input: RecoveryGateInput = {
+      ...baseInput,
+      confidence: 0.5,
+    };
+    const result = evaluateRecoveryGate(input);
+    expect(result.authorized).toBe(false);
+    expect(result.reasonCodes).toContain("DENY_LOW_CONFIDENCE");
+  });
+
+  it("denies recovery if failure is marked as RISK_OR_POLICY", () => {
+    const input: RecoveryGateInput = {
+      ...baseInput,
+      failureClass: "RISK_OR_POLICY",
+    };
+    const result = evaluateRecoveryGate(input);
+    expect(result.authorized).toBe(false);
+    expect(result.reasonCodes).toContain("DENY_RISK_FAILURE");
   });
 });

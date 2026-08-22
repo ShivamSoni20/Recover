@@ -85,8 +85,16 @@ export default {
         });
 
         if (insertError) {
-          return new Response(JSON.stringify({ status: "already_processed" }), {
-            status: 200,
+          // If duplicate key violation, return 200 already_processed
+          if (insertError.code === "23505" || insertError.message?.includes("duplicate")) {
+            return new Response(JSON.stringify({ status: "already_processed" }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          }
+          // On genuine DB failure, return 500 so Razorpay retries
+          return new Response(JSON.stringify({ error: "Database error persisting webhook" }), {
+            status: 500,
             headers: { "content-type": "application/json" },
           });
         }
@@ -123,6 +131,19 @@ export default {
                 status: "PAYMENT_FAILED",
               });
 
+              // Update session tracking if available
+              if (canonicalPayment.order_id) {
+                await supabase
+                  .from("test_payment_sessions")
+                  .update({
+                    status: "FAILED",
+                    original_payment_id: canonicalPayment.id,
+                    recovery_case_id: caseId,
+                    updated_at: new Date().toISOString(),
+                  })
+                  .eq("order_id", canonicalPayment.order_id);
+              }
+
               await supabase.from("case_events").insert({
                 case_id: caseId,
                 event_type: "PAYMENT_FAILED_WEBHOOK_VERIFIED",
@@ -150,11 +171,20 @@ export default {
           if (paymentLinkId) {
             const { data: action } = await supabase
               .from("recovery_actions")
-              .select("case_id")
+              .select("case_id, accepted_success_event_id")
               .eq("payment_link_id", paymentLinkId)
               .maybeSingle();
 
-            if (action?.case_id) {
+            if (action?.case_id && !action.accepted_success_event_id) {
+              await supabase
+                .from("recovery_actions")
+                .update({
+                  accepted_success_event_id: providerEventId,
+                  recovery_payment_id: paymentId,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("payment_link_id", paymentLinkId);
+
               await resumeWorkflowWithPaymentEvent(action.case_id, {
                 eventType,
                 paymentId: paymentId || "unknown",
@@ -163,6 +193,12 @@ export default {
             }
           }
         }
+
+        // Mark processed_at timestamp on webhook event record
+        await supabase
+          .from("webhook_events")
+          .update({ processed_at: new Date().toISOString() })
+          .eq("provider_event_id", providerEventId);
 
         return new Response(JSON.stringify({ status: "processed", eventType }), {
           status: 200,
