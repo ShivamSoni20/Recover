@@ -1,4 +1,4 @@
-import "./lib/error-capture";
+﻿import "./lib/error-capture";
 
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
@@ -46,9 +46,9 @@ function isH3SwallowedErrorBody(body: string): boolean {
 
 import nodeCrypto from "node:crypto";
 import { verifyRazorpayWebhookSignature } from "./lib/razorpay/webhooks";
-import { fetchRazorpayPayment } from "./lib/razorpay/payments";
 import { supabase } from "./lib/db/supabase";
-import { startRecoveryWorkflow, resumeWorkflowWithPaymentEvent } from "./lib/graph/runner";
+import { resumeWorkflowWithPaymentEvent } from "./lib/graph/runner";
+import { processCanonicalFailedPayment } from "./lib/recovery/process-failed-payment";
 
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
@@ -102,62 +102,11 @@ export default {
         if (eventType === "payment.failed") {
           const paymentEntity = payload.payload?.payment?.entity;
           if (paymentEntity?.id) {
-            const canonicalPayment = await fetchRazorpayPayment(paymentEntity.id);
-            const caseId = crypto.randomUUID();
-            const caseNumber = `RCV-${Math.floor(10000 + Math.random() * 89999)}`;
-
-            // Check if a case already exists for this failed payment (idempotency)
-            const { data: existingCase } = await supabase
-              .from("recovery_cases")
-              .select("id")
-              .eq("original_payment_id", canonicalPayment.id)
-              .maybeSingle();
-
-            if (!existingCase) {
-              await supabase.from("recovery_cases").insert({
-                id: caseId,
-                case_number: caseNumber,
-                thread_id: caseId,
-                original_order_id: canonicalPayment.order_id || "unknown",
-                original_payment_id: canonicalPayment.id,
-                amount_minor: canonicalPayment.amount,
-                currency: canonicalPayment.currency,
-                customer_email: canonicalPayment.email,
-                customer_name: canonicalPayment.notes?.customer_name,
-                failure_reason: canonicalPayment.error_reason || canonicalPayment.error_code || "Payment Failed",
-                failure_detail: canonicalPayment.error_description || "Transaction failed at gateway",
-                method: canonicalPayment.method,
-                failed_at: new Date().toISOString(),
-                status: "PAYMENT_FAILED",
-              });
-
-              // Update session tracking if available
-              if (canonicalPayment.order_id) {
-                await supabase
-                  .from("test_payment_sessions")
-                  .update({
-                    status: "FAILED",
-                    original_payment_id: canonicalPayment.id,
-                    recovery_case_id: caseId,
-                    updated_at: new Date().toISOString(),
-                  })
-                  .eq("order_id", canonicalPayment.order_id);
-              }
-
-              await supabase.from("case_events").insert({
-                case_id: caseId,
-                event_type: "PAYMENT_FAILED_WEBHOOK_VERIFIED",
-                label: "Failure received & verified",
-                data: { paymentId: canonicalPayment.id, orderId: canonicalPayment.order_id },
-              });
-
-              // Start durable workflow
-              await startRecoveryWorkflow({
-                caseId,
-                originalOrderId: canonicalPayment.order_id || "",
-                originalPaymentId: canonicalPayment.id,
-              });
-            }
+            await processCanonicalFailedPayment({
+              paymentId: paymentEntity.id,
+              orderId: paymentEntity.order_id,
+              provenance: "WEBHOOK",
+            });
           }
         }
 

@@ -1,8 +1,20 @@
-import { useState, useEffect } from "react";
+﻿import { useState, useEffect, useRef } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArrowRight, Loader2 } from "lucide-react";
-import { DemoButton, Field, PaymentStatusBadge, Panel } from "@/components/demo/ui";
-import { createTestPaymentFn, getSessionStatusFn } from "@/lib/api/server-fns";
+import {
+  ArrowRight,
+  CheckCircle2,
+  Clock,
+  Info,
+  Loader2,
+  RefreshCw,
+  XCircle,
+} from "lucide-react";
+import { DemoButton, Field, PaymentStatusBadge, Panel, StepRow } from "@/components/demo/ui";
+import {
+  createTestPaymentFn,
+  getSessionStatusFn,
+  reconcileTestPaymentSessionFn,
+} from "@/lib/api/server-fns";
 import { formatINR } from "@/lib/demo/types";
 
 declare global {
@@ -105,6 +117,17 @@ function Label({ children }: { children: React.ReactNode }) {
   );
 }
 
+export type CheckoutState =
+  | "READY"
+  | "CHECKOUT_OPEN"
+  | "CLIENT_FAILURE_REPORTED"
+  | "CONFIRMING_PROVIDER_FAILURE"
+  | "FAILURE_CONFIRMED"
+  | "CHECKOUT_DISMISSED"
+  | "PROVIDER_CONFIRMATION_TIMEOUT"
+  | "PAYMENT_SUCCEEDED"
+  | "ERROR";
+
 function CreatePayment() {
   const navigate = useNavigate();
   const [amount, setAmount] = useState("2999");
@@ -113,8 +136,16 @@ function CreatePayment() {
   const [purpose, setPurpose] = useState<string>("Pro Plan — Annual");
   const [descriptionValue, setDescriptionValue] = useState("Recover Buildathon Test");
   const [loading, setLoading] = useState(false);
-  const [waitingForWebhook, setWaitingForWebhook] = useState(false);
+  const [manualChecking, setManualChecking] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const [checkoutState, setCheckoutState] = useState<CheckoutState>("READY");
+  const [candidatePaymentId, setCandidatePaymentId] = useState<string | null>(null);
+  const [isDirectReconciling, setIsDirectReconciling] = useState(false);
+
+  const failureObservedRef = useRef<boolean>(false);
+  const candidatePaymentIdRef = useRef<string | null>(null);
+  const confirmStartTimeRef = useRef<number | null>(null);
 
   const [realOrder, setRealOrder] = useState<{
     sessionId: string;
@@ -131,28 +162,75 @@ function CreatePayment() {
   const formValid = amountValid && emailValid && nameValid && descriptionValue.trim().length > 0;
   const amountMinor = amountValid ? Math.round(parsed * 100) : 299900;
 
-  // Poll for signed webhook arrival when waiting
+  // Confirmation loop: fast poll webhook + fallback canonical API reconciliation + bounded timeout
   useEffect(() => {
-    if (!waitingForWebhook || !realOrder?.sessionId) return;
+    if (checkoutState !== "CONFIRMING_PROVIDER_FAILURE" || !realOrder?.sessionId) return;
+
+    if (!confirmStartTimeRef.current) {
+      confirmStartTimeRef.current = Date.now();
+    }
+
     const interval = setInterval(async () => {
+      const elapsed = Date.now() - (confirmStartTimeRef.current || Date.now());
+
       try {
+        // 1. Cheap database check for webhook-created case
         const session = await getSessionStatusFn({ data: realOrder.sessionId });
         if (session?.caseId) {
           clearInterval(interval);
+          setCheckoutState("FAILURE_CONFIRMED");
           navigate({ to: "/demo/payment/$id", params: { id: session.caseId } });
+          return;
         }
-      } catch {
-        // Continue polling
+
+        // 2. If webhook is delayed (> 6 seconds), perform active canonical API reconciliation
+        if (elapsed >= 6000) {
+          setIsDirectReconciling(true);
+          const reconciliation = await reconcileTestPaymentSessionFn({
+            data: {
+              sessionId: realOrder.sessionId,
+              candidatePaymentId: candidatePaymentIdRef.current || undefined,
+            },
+          });
+
+          if (reconciliation.status === "FAILURE_CONFIRMED" && reconciliation.caseId) {
+            clearInterval(interval);
+            setCheckoutState("FAILURE_CONFIRMED");
+            navigate({ to: "/demo/payment/$id", params: { id: reconciliation.caseId } });
+            return;
+          }
+
+          if (reconciliation.status === "PAYMENT_SUCCEEDED") {
+            clearInterval(interval);
+            setCheckoutState("PAYMENT_SUCCEEDED");
+            return;
+          }
+        }
+
+        // 3. Bounded timeout: after 12 seconds without confirmed failure, stop polling
+        if (elapsed >= 12000) {
+          clearInterval(interval);
+          setCheckoutState("PROVIDER_CONFIRMATION_TIMEOUT");
+        }
+      } catch (err) {
+        console.error("Confirmation loop error:", err);
       }
     }, 1500);
 
     return () => clearInterval(interval);
-  }, [waitingForWebhook, realOrder?.sessionId, navigate]);
+  }, [checkoutState, realOrder?.sessionId, navigate]);
 
   const handleCreate = async () => {
     if (!formValid) return;
     setLoading(true);
     setErrorMessage(null);
+    setCheckoutState("READY");
+    failureObservedRef.current = false;
+    candidatePaymentIdRef.current = null;
+    setCandidatePaymentId(null);
+    setIsDirectReconciling(false);
+    confirmStartTimeRef.current = null;
+
     try {
       const res = await createTestPaymentFn({
         data: {
@@ -181,6 +259,11 @@ function CreatePayment() {
   const handleOpenStandardCheckout = async () => {
     if (!realOrder) return;
     setErrorMessage(null);
+    failureObservedRef.current = false;
+    candidatePaymentIdRef.current = null;
+    setCandidatePaymentId(null);
+    setIsDirectReconciling(false);
+    confirmStartTimeRef.current = null;
 
     const loaded = await loadRazorpayScript();
     if (!loaded || !window.Razorpay) {
@@ -192,6 +275,8 @@ function CreatePayment() {
       setErrorMessage("RAZORPAY_KEY_ID is missing from environment. Please configure your Test Mode key.");
       return;
     }
+
+    setCheckoutState("CHECKOUT_OPEN");
 
     const rzp = new window.Razorpay({
       key: realOrder.razorpayKeyId,
@@ -207,21 +292,98 @@ function CreatePayment() {
       theme: {
         color: "#5b21f0",
       },
+      retry: {
+        enabled: false, // Critical: Disable Razorpay's built-in retry modal loop for initial Recover demo
+      },
       handler: function () {
-        navigate({ to: "/demo" });
+        setCheckoutState("PAYMENT_SUCCEEDED");
       },
       modal: {
         ondismiss: function () {
-          setWaitingForWebhook(true);
+          if (failureObservedRef.current) {
+            // Failure was observed in checkout before dismiss; continue provider confirmation
+            setCheckoutState("CONFIRMING_PROVIDER_FAILURE");
+          } else {
+            // Dismissed without any failed payment attempt
+            setCheckoutState("CHECKOUT_DISMISSED");
+          }
         },
       },
     });
 
-    rzp.on("payment.failed", function () {
-      setWaitingForWebhook(true);
+    rzp.on("payment.failed", function (response: unknown) {
+      failureObservedRef.current = true;
+      setCheckoutState("CLIENT_FAILURE_REPORTED");
+
+      const errorPayload = (response as {
+        error?: {
+          code?: string;
+          description?: string;
+          source?: string;
+          step?: string;
+          reason?: string;
+          metadata?: { payment_id?: string; paymentId?: string; order_id?: string };
+        };
+      })?.error;
+
+      const candidateId = errorPayload?.metadata?.payment_id || errorPayload?.metadata?.paymentId || null;
+      if (candidateId) {
+        candidatePaymentIdRef.current = candidateId;
+        setCandidatePaymentId(candidateId);
+      }
+
+      confirmStartTimeRef.current = Date.now();
+      setCheckoutState("CONFIRMING_PROVIDER_FAILURE");
     });
 
     rzp.open();
+  };
+
+  const handleManualReconciliation = async () => {
+    if (!realOrder?.sessionId) return;
+    setManualChecking(true);
+    setErrorMessage(null);
+
+    try {
+      const res = await reconcileTestPaymentSessionFn({
+        data: {
+          sessionId: realOrder.sessionId,
+          candidatePaymentId: candidatePaymentIdRef.current || undefined,
+        },
+      });
+
+      if (res.status === "FAILURE_CONFIRMED" && res.caseId) {
+        setCheckoutState("FAILURE_CONFIRMED");
+        navigate({ to: "/demo/payment/$id", params: { id: res.caseId } });
+        return;
+      }
+
+      if (res.status === "PAYMENT_SUCCEEDED") {
+        setCheckoutState("PAYMENT_SUCCEEDED");
+        return;
+      }
+
+      if (res.status === "NO_PAYMENT_ATTEMPT_FOUND") {
+        setErrorMessage("Razorpay reports no payment attempts on this order yet. Try completing or failing a payment in Checkout.");
+      } else {
+        setErrorMessage(`Provider status: ${res.status}. Payment is not in failed state.`);
+      }
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : "Failed to reconcile with Razorpay API.");
+    } finally {
+      setManualChecking(false);
+    }
+  };
+
+  const handleReset = () => {
+    setRealOrder(null);
+    setCheckoutState("READY");
+    failureObservedRef.current = false;
+    candidatePaymentIdRef.current = null;
+    setCandidatePaymentId(null);
+    setIsDirectReconciling(false);
+    confirmStartTimeRef.current = null;
+    setErrorMessage(null);
   };
 
   return (
@@ -235,22 +397,123 @@ function CreatePayment() {
 
       {errorMessage ? (
         <div className="mt-4 rounded-xl border border-danger/30 bg-danger-soft p-4 text-xs text-danger">
-          <strong>Integration notice:</strong> {errorMessage}
+          <strong>Notice:</strong> {errorMessage}
         </div>
       ) : null}
 
       <div className="mt-8 grid gap-6 lg:grid-cols-[1.4fr_1fr]">
         <div className="space-y-4">
           <Panel title="Payment details">
-            {waitingForWebhook ? (
-              <div className="flex flex-col items-center gap-3 py-10 text-center">
-                <Loader2 className="h-7 w-7 animate-spin text-brand" />
-                <h3 className="text-base font-bold text-foreground">
-                  Payment failure reported.
-                </h3>
-                <p className="max-w-sm text-xs leading-5 text-muted-foreground">
-                  Waiting for signed Razorpay <code className="rounded bg-muted px-1.5 py-0.5">payment.failed</code> webhook confirmation from provider...
-                </p>
+            {checkoutState === "CONFIRMING_PROVIDER_FAILURE" || checkoutState === "CLIENT_FAILURE_REPORTED" ? (
+              <div className="space-y-6 py-4">
+                <div className="flex flex-col items-center gap-2 text-center">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-brand-soft text-brand">
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  </div>
+                  <h3 className="text-base font-bold text-foreground">
+                    Payment failed in Checkout
+                  </h3>
+                  <p className="max-w-md text-xs leading-5 text-muted-foreground">
+                    {isDirectReconciling
+                      ? "Webhook delayed — checking Razorpay directly..."
+                      : "Confirming canonical Razorpay provider state..."}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-border bg-muted/40 p-4">
+                  <ul className="divide-y divide-border/60">
+                    <StepRow
+                      label="Payment failed in Checkout"
+                      state="done"
+                      detail="Client signal received"
+                    />
+                    <StepRow
+                      label={
+                        isDirectReconciling
+                          ? "Reconciling canonical Razorpay API"
+                          : "Awaiting signed Razorpay webhook"
+                      }
+                      state="active"
+                      detail={isDirectReconciling ? "Checking directly" : "Verifying HMAC"}
+                    />
+                    <StepRow label="Verified failure recorded" state="pending" />
+                    <StepRow label="Starting Recover agent workflow" state="pending" />
+                  </ul>
+                </div>
+
+                {candidatePaymentId ? (
+                  <div className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3 text-xs">
+                    <div>
+                      <p className="font-mono font-medium text-foreground">{candidatePaymentId}</p>
+                      <p className="text-[11px] text-muted-foreground">Candidate payment hint</p>
+                    </div>
+                    <PaymentStatusBadge status="AWAITING VERIFICATION" tone="warning" />
+                  </div>
+                ) : null}
+              </div>
+            ) : checkoutState === "CHECKOUT_DISMISSED" ? (
+              <div className="flex flex-col items-center gap-4 py-8 text-center">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                  <XCircle className="h-6 w-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-foreground">Checkout closed</h3>
+                  <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
+                    No failed payment has been confirmed yet. You closed the checkout without a verified failure.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-3">
+                  <DemoButton onClick={handleOpenStandardCheckout}>
+                    Reopen Test Checkout <ArrowRight className="h-4 w-4" />
+                  </DemoButton>
+                  <DemoButton
+                    variant="outline"
+                    loading={manualChecking}
+                    onClick={handleManualReconciliation}
+                  >
+                    <RefreshCw className="h-4 w-4" /> Check Razorpay State
+                  </DemoButton>
+                </div>
+              </div>
+            ) : checkoutState === "PROVIDER_CONFIRMATION_TIMEOUT" ? (
+              <div className="flex flex-col items-center gap-4 py-8 text-center">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-warning-soft text-warning">
+                  <Clock className="h-6 w-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-foreground">
+                    Razorpay confirmation is taking longer than expected
+                  </h3>
+                  <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
+                    We haven't received a confirmed failed payment from Razorpay yet. You can manually check provider state or reopen checkout.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-3">
+                  <DemoButton loading={manualChecking} onClick={handleManualReconciliation}>
+                    <RefreshCw className="h-4 w-4" /> Check Provider State
+                  </DemoButton>
+                  <DemoButton variant="outline" onClick={handleOpenStandardCheckout}>
+                    Reopen Checkout
+                  </DemoButton>
+                  <DemoButton variant="outline" onClick={handleReset}>
+                    Back to Test Payment
+                  </DemoButton>
+                </div>
+              </div>
+            ) : checkoutState === "PAYMENT_SUCCEEDED" ? (
+              <div className="flex flex-col items-center gap-4 py-8 text-center">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-success-soft text-success">
+                  <CheckCircle2 className="h-6 w-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-foreground">Payment succeeded</h3>
+                  <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
+                    No recovery was required because the initial payment completed successfully.
+                    <br />
+                    Run another test and choose <strong>Failure</strong> to see Recover in action.
+                  </p>
+                </div>
+                <DemoButton onClick={handleReset}>Create Another Test Payment</DemoButton>
               </div>
             ) : realOrder ? (
               <>
@@ -267,10 +530,19 @@ function CreatePayment() {
                     value={<PaymentStatusBadge status="READY FOR CHECKOUT" tone="brand" />}
                   />
                 </div>
-                <p className="mt-4 text-xs font-semibold text-success">Real Razorpay Order created</p>
-                <DemoButton className="mt-3 w-full sm:w-auto" onClick={handleOpenStandardCheckout}>
-                  Open Test Checkout <ArrowRight className="h-4 w-4" />
-                </DemoButton>
+
+                <div className="mt-4 rounded-xl border border-brand-soft bg-brand-softer/60 px-3.5 py-2.5 text-xs text-brand">
+                  💡 <strong>Demo note:</strong> Checkout retry is disabled so Recover can take over after the first failed attempt.
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <DemoButton onClick={handleOpenStandardCheckout}>
+                    Open Test Checkout <ArrowRight className="h-4 w-4" />
+                  </DemoButton>
+                  <DemoButton variant="outline" onClick={handleReset}>
+                    Change Details
+                  </DemoButton>
+                </div>
               </>
             ) : (
               <form
@@ -302,7 +574,7 @@ function CreatePayment() {
                       (amountValid ? "text-muted-foreground" : "text-danger")
                     }
                   >
-                    Demo range ₹{MIN_RUPEES.toLocaleString("en-IN")} – ₹
+                    Demo range ₹{MIN_RUPEES.toLocaleString("en-IN")} — ₹
                     {MAX_RUPEES.toLocaleString("en-IN")} · currency fixed to INR
                   </p>
                 </div>
@@ -359,7 +631,6 @@ function CreatePayment() {
                   className="w-full sm:w-auto"
                   loading={loading}
                   disabled={!formValid}
-                  onClick={handleCreate}
                 >
                   {loading ? "Creating payment..." : `Create ${formatINR(amountMinor)} Test Payment`}
                 </DemoButton>

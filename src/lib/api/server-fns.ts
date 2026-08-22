@@ -1,8 +1,9 @@
-import { createServerFn } from "@tanstack/react-start";
+﻿import { createServerFn } from "@tanstack/react-start";
 import { createRazorpayOrder } from "@/lib/razorpay/orders";
 import { supabase } from "@/lib/db/supabase";
 import { isValidMinorAmount } from "@/lib/domain/money";
 import { resumeWorkflowWithDecision } from "@/lib/graph/runner";
+import { reconcileTestPaymentSession, type ReconcileSessionParams } from "@/lib/recovery/reconcile-session";
 
 export const createTestPaymentFn = createServerFn({ method: "POST" })
   .validator((d: {
@@ -57,24 +58,46 @@ export const getSessionStatusFn = createServerFn({ method: "GET" })
   .handler(async ({ data: sessionId }) => {
     const { data: session } = await supabase
       .from("test_payment_sessions")
-      .select("order_id, status")
+      .select("order_id, status, recovery_case_id, original_payment_id")
       .eq("session_id", sessionId)
       .maybeSingle();
 
     if (!session?.order_id) return null;
 
-    const { data: recoveryCase } = await supabase
-      .from("recovery_cases")
-      .select("id, case_number, status")
-      .eq("original_order_id", session.order_id)
-      .maybeSingle();
+    let caseId = session.recovery_case_id;
+    let caseNumber: string | null = null;
+
+    if (caseId) {
+      const { data: rc } = await supabase
+        .from("recovery_cases")
+        .select("id, case_number, status")
+        .eq("id", caseId)
+        .maybeSingle();
+      caseNumber = rc?.case_number || null;
+    } else {
+      const { data: recoveryCase } = await supabase
+        .from("recovery_cases")
+        .select("id, case_number, status")
+        .eq("original_order_id", session.order_id)
+        .maybeSingle();
+      if (recoveryCase) {
+        caseId = recoveryCase.id;
+        caseNumber = recoveryCase.case_number;
+      }
+    }
 
     return {
       orderId: session.order_id,
       sessionStatus: session.status,
-      caseId: recoveryCase?.id || null,
-      caseNumber: recoveryCase?.case_number || null,
+      caseId: caseId || null,
+      caseNumber: caseNumber || null,
     };
+  });
+
+export const reconcileTestPaymentSessionFn = createServerFn({ method: "POST" })
+  .validator((d: ReconcileSessionParams) => d)
+  .handler(async ({ data }) => {
+    return await reconcileTestPaymentSession(data);
   });
 
 export const getCaseFn = createServerFn({ method: "GET" })
@@ -122,7 +145,6 @@ export const getMetricsFn = createServerFn({ method: "GET" }).handler(async () =
   const allCases = cases || [];
   const totalAtRisk = allCases.reduce((sum, c) => sum + Number(c.amount_minor), 0);
 
-  // Derive verified recovered amounts strictly from verified receipts
   let totalRecovered = 0;
   let verifiedCount = 0;
   for (const c of allCases) {
