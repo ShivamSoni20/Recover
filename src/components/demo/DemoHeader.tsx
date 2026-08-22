@@ -27,6 +27,7 @@ export function DemoHeader() {
           </Link>
         </nav>
 
+        <div className="flex items-center gap-2">
           <TooltipProvider delayDuration={100}>
             <Tooltip>
               <TooltipTrigger asChild>

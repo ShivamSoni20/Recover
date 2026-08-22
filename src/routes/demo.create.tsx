@@ -1,10 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Loader2 } from "lucide-react";
 import { DemoButton, Field, PaymentStatusBadge, Panel } from "@/components/demo/ui";
-import { createTestPaymentFn } from "@/lib/api/server-fns";
-import { createCase, DEMO_AMOUNT_MINOR } from "@/lib/demo/store";
-import { formatINR, type DemoCase } from "@/lib/demo/types";
+import { createTestPaymentFn, getSessionStatusFn } from "@/lib/api/server-fns";
+import { formatINR } from "@/lib/demo/types";
 
 declare global {
   interface Window {
@@ -108,16 +107,17 @@ function Label({ children }: { children: React.ReactNode }) {
 
 function CreatePayment() {
   const navigate = useNavigate();
-  const [amount, setAmount] = useState(String(DEMO_AMOUNT_MINOR / 100));
+  const [amount, setAmount] = useState("2999");
   const [name, setName] = useState("Amit Sharma");
   const [email, setEmail] = useState("amit@example.com");
   const [purpose, setPurpose] = useState<string>("Pro Plan — Annual");
   const [descriptionValue, setDescriptionValue] = useState("Recover Buildathon Test");
   const [loading, setLoading] = useState(false);
-  const [order, setOrder] = useState<DemoCase | null>(null);
-  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [waitingForWebhook, setWaitingForWebhook] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const [realOrder, setRealOrder] = useState<{
+    sessionId: string;
     orderId: string;
     amountMinor: number;
     currency: string;
@@ -129,11 +129,30 @@ function CreatePayment() {
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
   const nameValid = name.trim().length > 0 && name.trim().length <= 60;
   const formValid = amountValid && emailValid && nameValid && descriptionValue.trim().length > 0;
-  const amountMinor = amountValid ? Math.round(parsed * 100) : DEMO_AMOUNT_MINOR;
+  const amountMinor = amountValid ? Math.round(parsed * 100) : 299900;
+
+  // Poll for signed webhook arrival when waiting
+  useEffect(() => {
+    if (!waitingForWebhook || !realOrder?.sessionId) return;
+    const interval = setInterval(async () => {
+      try {
+        const session = await getSessionStatusFn({ data: realOrder.sessionId });
+        if (session?.caseId) {
+          clearInterval(interval);
+          navigate({ to: "/demo/payment/$id", params: { id: session.caseId } });
+        }
+      } catch {
+        // Continue polling
+      }
+    }, 1500);
+
+    return () => clearInterval(interval);
+  }, [waitingForWebhook, realOrder?.sessionId, navigate]);
 
   const handleCreate = async () => {
     if (!formValid) return;
     setLoading(true);
+    setErrorMessage(null);
     try {
       const res = await createTestPaymentFn({
         data: {
@@ -148,41 +167,29 @@ function CreatePayment() {
       });
 
       setRealOrder(res);
-      const fallbackLocal = createCase({
-        amountMinor,
-        description: descriptionValue.trim().slice(0, 80),
-        customer: {
-          name: name.trim().slice(0, 60),
-          email: email.trim().slice(0, 120),
-          purpose,
-        },
-      });
-      fallbackLocal.orderId = res.orderId;
-      setOrder(fallbackLocal);
-    } catch (err) {
-      console.error("[Create Payment Error]:", err);
-      // Fallback
-      const created = createCase({
-        amountMinor,
-        description: descriptionValue.trim().slice(0, 80),
-        customer: {
-          name: name.trim().slice(0, 60),
-          email: email.trim().slice(0, 120),
-          purpose,
-        },
-      });
-      setOrder(created);
+    } catch (err: unknown) {
+      setErrorMessage(
+        err instanceof Error
+          ? err.message
+          : "Failed to connect to Razorpay Test API. Ensure valid credentials in .env"
+      );
     } finally {
       setLoading(false);
     }
   };
 
   const handleOpenStandardCheckout = async () => {
-    if (!order) return;
+    if (!realOrder) return;
+    setErrorMessage(null);
+
     const loaded = await loadRazorpayScript();
-    if (!loaded || !window.Razorpay || !realOrder?.razorpayKeyId) {
-      // Direct navigation if Razorpay SDK or credentials not present
-      navigate({ to: "/demo/payment/$id", params: { id: order.caseId } });
+    if (!loaded || !window.Razorpay) {
+      setErrorMessage("Could not load Razorpay Checkout SDK. Please check your internet connection.");
+      return;
+    }
+
+    if (!realOrder.razorpayKeyId) {
+      setErrorMessage("RAZORPAY_KEY_ID is missing from environment. Please configure your Test Mode key.");
       return;
     }
 
@@ -191,11 +198,11 @@ function CreatePayment() {
       amount: realOrder.amountMinor,
       currency: realOrder.currency,
       name: "Recover Test Merchant",
-      description: order.description,
+      description: descriptionValue,
       order_id: realOrder.orderId,
       prefill: {
-        name: order.customer.name,
-        email: order.customer.email,
+        name,
+        email,
       },
       theme: {
         color: "#5b21f0",
@@ -205,13 +212,13 @@ function CreatePayment() {
       },
       modal: {
         ondismiss: function () {
-          navigate({ to: "/demo/payment/$id", params: { id: order.caseId } });
+          setWaitingForWebhook(true);
         },
       },
     });
 
     rzp.on("payment.failed", function () {
-      navigate({ to: "/demo/payment/$id", params: { id: order.caseId } });
+      setWaitingForWebhook(true);
     });
 
     rzp.open();
@@ -226,19 +233,35 @@ function CreatePayment() {
         Choose the payment Recover will later try to recover.
       </p>
 
+      {errorMessage ? (
+        <div className="mt-4 rounded-xl border border-danger/30 bg-danger-soft p-4 text-xs text-danger">
+          <strong>Integration notice:</strong> {errorMessage}
+        </div>
+      ) : null}
+
       <div className="mt-8 grid gap-6 lg:grid-cols-[1.4fr_1fr]">
         <div className="space-y-4">
           <Panel title="Payment details">
-            {order ? (
+            {waitingForWebhook ? (
+              <div className="flex flex-col items-center gap-3 py-10 text-center">
+                <Loader2 className="h-7 w-7 animate-spin text-brand" />
+                <h3 className="text-base font-bold text-foreground">
+                  Payment failure reported.
+                </h3>
+                <p className="max-w-sm text-xs leading-5 text-muted-foreground">
+                  Waiting for signed Razorpay <code className="rounded bg-muted px-1.5 py-0.5">payment.failed</code> webhook confirmation from provider...
+                </p>
+              </div>
+            ) : realOrder ? (
               <>
                 <div className="divide-y divide-border/70">
-                  <Field label="Demo order" value={order.orderId} />
-                  <Field label="Amount" value={formatINR(order.amountMinor)} />
-                  <Field label="Currency" value="INR" />
-                  <Field label="Customer" value={order.customer.name} />
-                  <Field label="Email" value={order.customer.email} />
-                  <Field label="Payment purpose" value={order.customer.purpose} />
-                  <Field label="Description" value={order.description} />
+                  <Field label="Razorpay Order" value={realOrder.orderId} />
+                  <Field label="Amount" value={formatINR(realOrder.amountMinor)} />
+                  <Field label="Currency" value={realOrder.currency} />
+                  <Field label="Customer" value={name} />
+                  <Field label="Email" value={email} />
+                  <Field label="Payment purpose" value={purpose} />
+                  <Field label="Description" value={descriptionValue} />
                   <Field
                     label="Status"
                     value={<PaymentStatusBadge status="READY FOR CHECKOUT" tone="brand" />}
@@ -417,16 +440,6 @@ function CreatePayment() {
           </div>
         </div>
       </div>
-
-      {order ? (
-        <RecoveryCheckoutModal
-          open={checkoutOpen}
-          onOpenChange={setCheckoutOpen}
-          mode="initial"
-          amountMinor={order.amountMinor}
-          onOutcome={handleOutcome}
-        />
-      ) : null}
     </main>
   );
 }

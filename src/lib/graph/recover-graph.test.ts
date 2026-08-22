@@ -69,13 +69,41 @@ vi.mock("../ai/rag-retriever", () => ({
   ]),
 }));
 
+vi.mock("../domain/recovery-policy", () => ({
+  getActiveRecoveryPolicy: vi.fn().mockResolvedValue({
+    id: "00000000-0000-0000-0000-000000000001",
+    versionTag: "policy-test",
+    maxRecoveryAttempts: 2,
+    maxAutonomousAmountMinor: 1000000,
+    requireApprovalAboveMinor: 0,
+    allowFreshCheckout: true,
+    linkExpiryMinutes: 60,
+    minDiagnosisConfidence: 0.7,
+    blockRiskOrPolicyFailures: true,
+    blockUnknownFailures: true,
+  }),
+}));
+
 vi.mock("../db/supabase", () => ({
   supabase: {
     from: () => ({
-      insert: vi.fn().mockResolvedValue({ error: null }),
+      insert: vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: { id: "auth-1" }, error: null }),
+        }),
+      }),
+      update: vi.fn().mockReturnValue({
+        eq: vi.fn().mockResolvedValue({ error: null }),
+      }),
+      upsert: vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: { id: "action-1" }, error: null }),
+        }),
+      }),
       select: () => ({
         eq: () => ({
           maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+          limit: vi.fn().mockResolvedValue({ data: [], error: null }),
         }),
         limit: vi.fn().mockResolvedValue({ data: [], error: null }),
       }),

@@ -52,6 +52,6 @@ export class OpenRouterEmbeddings extends Embeddings {
 
   async embedQuery(document: string): Promise<number[]> {
     const embeddings = await this.embedDocuments([document]);
-    return embeddings[0];
+    return embeddings[0] ?? [];
   }
 }

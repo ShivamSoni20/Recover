@@ -44,6 +44,7 @@ function isH3SwallowedErrorBody(body: string): boolean {
   }
 }
 
+import nodeCrypto from "node:crypto";
 import { verifyRazorpayWebhookSignature } from "./lib/razorpay/webhooks";
 import { fetchRazorpayPayment } from "./lib/razorpay/payments";
 import { supabase } from "./lib/db/supabase";
@@ -58,7 +59,7 @@ export default {
       try {
         const rawBody = await request.text();
         const signature = request.headers.get("x-razorpay-signature");
-        const providerEventId = request.headers.get("x-razorpay-event-id") || `evt_${Date.now()}`;
+        let providerEventId = request.headers.get("x-razorpay-event-id");
 
         const isValid = verifyRazorpayWebhookSignature(rawBody, signature);
         if (!isValid) {
@@ -70,6 +71,11 @@ export default {
 
         const payload = JSON.parse(rawBody);
         const eventType = payload.event;
+
+        // Cryptographic fallback identity if event header is missing
+        if (!providerEventId) {
+          providerEventId = `evt_${nodeCrypto.createHash("sha256").update(`${eventType}_${rawBody}`).digest("hex").slice(0, 24)}`;
+        }
 
         const { error: insertError } = await supabase.from("webhook_events").insert({
           provider_event_id: providerEventId,
@@ -92,35 +98,45 @@ export default {
             const caseId = crypto.randomUUID();
             const caseNumber = `RCV-${Math.floor(10000 + Math.random() * 89999)}`;
 
-            await supabase.from("recovery_cases").insert({
-              id: caseId,
-              case_number: caseNumber,
-              thread_id: caseId,
-              original_order_id: canonicalPayment.order_id || "unknown",
-              original_payment_id: canonicalPayment.id,
-              amount_minor: canonicalPayment.amount,
-              currency: canonicalPayment.currency,
-              customer_email: canonicalPayment.email,
-              customer_name: canonicalPayment.notes?.customer_name,
-              failure_reason: canonicalPayment.error_reason || canonicalPayment.error_code || "Payment Failed",
-              failure_detail: canonicalPayment.error_description || "Transaction failed at gateway",
-              method: canonicalPayment.method,
-              failed_at: new Date().toISOString(),
-              status: "PAYMENT_FAILED",
-            });
+            // Check if a case already exists for this failed payment (idempotency)
+            const { data: existingCase } = await supabase
+              .from("recovery_cases")
+              .select("id")
+              .eq("original_payment_id", canonicalPayment.id)
+              .maybeSingle();
 
-            await supabase.from("case_events").insert({
-              case_id: caseId,
-              event_type: "PAYMENT_FAILED_WEBHOOK_VERIFIED",
-              label: "Failure received & verified",
-              data: { paymentId: canonicalPayment.id, orderId: canonicalPayment.order_id },
-            });
+            if (!existingCase) {
+              await supabase.from("recovery_cases").insert({
+                id: caseId,
+                case_number: caseNumber,
+                thread_id: caseId,
+                original_order_id: canonicalPayment.order_id || "unknown",
+                original_payment_id: canonicalPayment.id,
+                amount_minor: canonicalPayment.amount,
+                currency: canonicalPayment.currency,
+                customer_email: canonicalPayment.email,
+                customer_name: canonicalPayment.notes?.customer_name,
+                failure_reason: canonicalPayment.error_reason || canonicalPayment.error_code || "Payment Failed",
+                failure_detail: canonicalPayment.error_description || "Transaction failed at gateway",
+                method: canonicalPayment.method,
+                failed_at: new Date().toISOString(),
+                status: "PAYMENT_FAILED",
+              });
 
-            startRecoveryWorkflow({
-              caseId,
-              originalOrderId: canonicalPayment.order_id || "",
-              originalPaymentId: canonicalPayment.id,
-            }).catch((err) => console.error("[LangGraph Workflow Error]:", err));
+              await supabase.from("case_events").insert({
+                case_id: caseId,
+                event_type: "PAYMENT_FAILED_WEBHOOK_VERIFIED",
+                label: "Failure received & verified",
+                data: { paymentId: canonicalPayment.id, orderId: canonicalPayment.order_id },
+              });
+
+              // Start durable workflow
+              await startRecoveryWorkflow({
+                caseId,
+                originalOrderId: canonicalPayment.order_id || "",
+                originalPaymentId: canonicalPayment.id,
+              });
+            }
           }
         }
 

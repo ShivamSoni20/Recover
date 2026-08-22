@@ -9,7 +9,12 @@
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "verify:env": "bun run scripts/verify-env.ts",
+    "rag:ingest": "bun run scripts/ingest-knowledge.ts",
+    "razorpay:smoke": "bun run scripts/razorpay-smoke.ts"
   },
   "overrides": {
     "rolldown": "1.2.1"

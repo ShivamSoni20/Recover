@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArrowRight, ShieldAlert } from "lucide-react";
+import { ArrowRight, ShieldAlert, Loader2 } from "lucide-react";
 import { DemoButton, PaymentStatusBadge, Panel } from "@/components/demo/ui";
 import {
   AIDiagnosisCard,
@@ -9,10 +9,9 @@ import {
   RecoveryMachineTimeline,
   RecoveryProofPanel,
 } from "@/components/demo/panels";
-import { buildGateChecks, MACHINE_STEPS } from "@/lib/demo/data";
-import { updateCase, useDemoCase } from "@/lib/demo/store";
-import { formatINR } from "@/lib/demo/types";
-import { submitDecisionFn } from "@/lib/api/server-fns";
+import { getCaseFn, submitDecisionFn } from "@/lib/api/server-fns";
+import { formatINRMinor } from "@/lib/domain/money";
+import type { GateCheckResult } from "@/lib/domain/recovery-gate";
 
 const title = "Failed payment case — Recover";
 const description =
@@ -32,70 +31,73 @@ export const Route = createFileRoute("/demo/payment/$id")({
   component: PaymentCase,
 });
 
+const MACHINE_STEPS = [
+  "Failure received",
+  "Canonical state loaded",
+  "AI diagnosis running",
+  "Recovery strategy selected",
+  "Recovery Gate evaluating",
+];
+
 function PaymentCase() {
   const { id } = Route.useParams();
   const navigate = useNavigate();
-  const demoCase = useDemoCase(id);
 
-  const [machineStep, setMachineStep] = useState(0);
-  const [gateRevealed, setGateRevealed] = useState(0);
-  const [approvalPhase, setApprovalPhase] = useState<"idle" | "recheck" | "unpaid" | "creating">(
-    "idle",
-  );
+  const [caseData, setCaseData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [approvalPhase, setApprovalPhase] = useState<"idle" | "recheck" | "unpaid" | "creating">("idle");
 
-  const amount = demoCase?.amountMinor ?? 299900;
-  const gateChecks = useMemo(() => buildGateChecks(amount), [amount]);
-  const diagnosisReady = machineStep >= 3;
-  const gateStarted = machineStep >= 5;
-  const authorized = gateRevealed >= gateChecks.length;
-
-  // Sequential operational timeline
-  useEffect(() => {
-    if (!demoCase) return;
-    if (machineStep >= MACHINE_STEPS.length) return;
-    const t = window.setTimeout(() => setMachineStep((s) => s + 1), 600);
-    return () => window.clearTimeout(t);
-  }, [machineStep, demoCase]);
-
-  useEffect(() => {
-    if (!gateStarted) return;
-    if (gateRevealed >= gateChecks.length) return;
-    const t = window.setTimeout(() => setGateRevealed((n) => n + 1), 380);
-    return () => window.clearTimeout(t);
-  }, [gateStarted, gateRevealed, gateChecks.length]);
-
-  useEffect(() => {
-    if (!demoCase) return;
-    if (machineStep === 3 && demoCase.state === "PAYMENT_FAILED") {
-      updateCase(demoCase.caseId, { state: "DIAGNOSING" }, "Failure event received");
+  const loadCase = async () => {
+    try {
+      const data = await getCaseFn({ data: id });
+      if (data) setCaseData(data);
+    } catch (err) {
+      console.error("[Fetch Case Error]:", err);
+    } finally {
+      setLoading(false);
     }
-    if (diagnosisReady && demoCase.state === "DIAGNOSING") {
-      updateCase(demoCase.caseId, { state: "RECOVERY_PROPOSED" }, "AI diagnosis completed");
-    }
-    if (authorized && demoCase.state === "RECOVERY_PROPOSED") {
-      updateCase(
-        demoCase.caseId,
-        { state: "RECOVERY_AUTHORIZED", gateChecks },
-        "Recovery Gate authorized action",
-      );
-    }
-  }, [machineStep, diagnosisReady, authorized, demoCase, gateChecks]);
+  };
 
-  if (!demoCase) {
+  // Poll real case state and events
+  useEffect(() => {
+    loadCase();
+    const interval = setInterval(loadCase, 2000);
+    return () => clearInterval(interval);
+  }, [id]);
+
+  if (loading && !caseData) {
+    return (
+      <main className="mx-auto flex w-full max-w-2xl flex-col items-center justify-center px-6 py-24 text-center">
+        <Loader2 className="h-8 w-8 animate-spin text-brand" />
+        <p className="mt-4 text-sm font-semibold text-foreground">Loading canonical case from database...</p>
+      </main>
+    );
+  }
+
+  if (!caseData) {
     return (
       <main className="mx-auto w-full max-w-2xl px-6 py-20 text-center">
-        <h1 className="text-xl font-bold tracking-tight text-foreground">Demo case not found</h1>
+        <h1 className="text-xl font-bold tracking-tight text-foreground">Recovery case not found</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          This demo case is no longer in your local demo state.
+          No case matches <code className="font-mono text-xs">{id}</code> in Supabase.
         </p>
-        <DemoButton className="mt-6" onClick={() => navigate({ to: "/demo" })}>
-          Back to demo
+        <DemoButton className="mt-6" onClick={() => navigate({ to: "/demo/create" })}>
+          Create Test Payment
         </DemoButton>
       </main>
     );
   }
 
-  if (demoCase.state === "MANUAL_REVIEW") {
+  const diagnosis = caseData.recovery_diagnoses?.[0];
+  const authorization = caseData.action_authorizations?.[0];
+  const events = caseData.case_events || [];
+
+  const gateChecks: GateCheckResult[] = (authorization?.gate_checks as GateCheckResult[]) || [];
+  const authorized = Boolean(authorization?.authorized);
+  const diagnosisReady = Boolean(diagnosis);
+  const gateStarted = Boolean(authorization);
+
+  if (caseData.terminal_status === "MANUAL_REVIEW" || caseData.status === "MANUAL_REVIEW") {
     return (
       <main className="mx-auto w-full max-w-2xl px-6 py-20">
         <Panel className="px-6 py-10 text-center">
@@ -106,9 +108,11 @@ function PaymentCase() {
           <p className="mt-2 text-sm font-semibold text-foreground">
             No financial action executed.
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">Reason: Operator chose manual review.</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Reason: Escalated for operator financial review.
+          </p>
           <DemoButton className="mt-6" variant="outline" onClick={() => navigate({ to: "/demo" })}>
-            Back to demo
+            Back to overview
           </DemoButton>
         </Panel>
       </main>
@@ -120,41 +124,32 @@ function PaymentCase() {
     try {
       await submitDecisionFn({
         data: {
-          caseId: demoCase.caseId,
+          caseId: caseData.id,
           decision: "APPROVE_RECOVERY",
         },
       });
-    } catch {
-      // Proceed with local workflow view
-    }
-    setApprovalPhase("unpaid");
-    window.setTimeout(() => {
       setApprovalPhase("creating");
-      updateCase(demoCase.caseId, { state: "WAITING_APPROVAL" });
-      updateCase(demoCase.caseId, { state: "CREATING_RECOVERY_CHECKOUT" }, "Recovery approved");
-    }, 600);
-    window.setTimeout(() => {
-      updateCase(
-        demoCase.caseId,
-        { state: "RECOVERY_CHECKOUT_READY" },
-        "Recovery checkout created",
-      );
-      navigate({ to: "/demo/recovery/$id/checkout", params: { id: demoCase.caseId } });
-    }, 1200);
+      setTimeout(() => {
+        navigate({ to: "/demo/recovery/$id/checkout", params: { id: caseData.id } });
+      }, 1000);
+    } catch (err) {
+      console.error("[Decision Error]:", err);
+      setApprovalPhase("idle");
+    }
   };
 
   const handleEscalate = async () => {
     try {
       await submitDecisionFn({
         data: {
-          caseId: demoCase.caseId,
+          caseId: caseData.id,
           decision: "ESCALATE",
         },
       });
-    } catch {
-      // Ignore
+      loadCase();
+    } catch (err) {
+      console.error("[Escalate Error]:", err);
     }
-    updateCase(demoCase.caseId, { state: "MANUAL_REVIEW" }, "Escalated to manual review");
   };
 
   const proofSteps: { label: string; state: "done" | "active" | "pending" }[] = [
@@ -169,24 +164,60 @@ function PaymentCase() {
     { label: "Independent verification", state: "pending" },
   ];
 
+  const demoCaseAdapter = {
+    caseId: caseData.case_number,
+    orderId: caseData.original_order_id,
+    originalPaymentId: caseData.original_payment_id,
+    amountMinor: Number(caseData.amount_minor),
+    currency: caseData.currency,
+    paymentStatus: caseData.status,
+    failureReason: caseData.failure_reason,
+    failureDetail: caseData.failure_detail,
+    method: caseData.method || "Card / UPI",
+    failedAt: caseData.failed_at ? new Date(caseData.failed_at).toLocaleTimeString() : null,
+    confidence: diagnosis ? Math.round(Number(diagnosis.confidence) * 100) : 0,
+    failureClass: diagnosis?.failure_class || "ANALYZING",
+    diagnosis: diagnosis?.summary || "Analyzing payment failure telemetry with OpenRouter AI...",
+    recoveryStrategy: authorization?.strategy || "FRESH_CHECKOUT",
+    gateChecks,
+    recoveryReference: "",
+    recoveryLinkId: "",
+    recoveryPaymentId: "",
+    verificationChecks: [],
+    state: caseData.status,
+    events: events.map((e: any) => ({
+      time: new Date(e.created_at).toLocaleTimeString(),
+      label: e.label,
+    })),
+    customer: {
+      name: caseData.customer_name || "Customer",
+      email: caseData.customer_email || "customer@example.com",
+      purpose: "Payment Recovery",
+    },
+    description: caseData.description || "Recover Case",
+  };
+
   return (
     <main className="mx-auto w-full max-w-7xl px-6 py-10">
       <div className="flex flex-wrap items-center gap-4">
         <PaymentStatusBadge status="Payment failed" />
         <h1 className="text-2xl font-bold tracking-tight text-foreground">
-          {formatINR(demoCase.amountMinor)}
+          {formatINRMinor(caseData.amount_minor)}
         </h1>
-        <span className="font-mono text-xs text-muted-foreground">{demoCase.caseId}</span>
+        <span className="font-mono text-xs text-muted-foreground">{caseData.case_number}</span>
       </div>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-3">
-        <ProviderTruthPanel demoCase={demoCase} />
+        <ProviderTruthPanel demoCase={demoCaseAdapter} />
 
         <div className="space-y-6">
-          <RecoveryMachineTimeline steps={MACHINE_STEPS} completed={machineStep} />
-          {diagnosisReady ? <AIDiagnosisCard demoCase={demoCase} /> : null}
+          <RecoveryMachineTimeline
+            steps={MACHINE_STEPS}
+            completed={authorized ? 5 : diagnosisReady ? 3 : 1}
+          />
+          {diagnosisReady ? <AIDiagnosisCard demoCase={demoCaseAdapter} /> : null}
           {gateStarted ? (
-            <RecoveryGate checks={gateChecks} revealed={gateRevealed} authorized={authorized} />
+            <RecoveryGate checks={gateChecks} revealed={gateChecks.length} authorized={authorized} />
           ) : null}
 
           {authorized ? (
@@ -199,7 +230,7 @@ function PaymentCase() {
                 <div className="flex items-center justify-between py-2.5">
                   <span className="text-xs text-muted-foreground">Amount</span>
                   <span className="text-xs font-bold text-foreground">
-                    {formatINR(demoCase.amountMinor)}
+                    {formatINRMinor(caseData.amount_minor)}
                   </span>
                 </div>
               </div>
@@ -207,7 +238,7 @@ function PaymentCase() {
               {approvalPhase === "idle" ? (
                 <div className="mt-4 flex flex-wrap gap-3">
                   <DemoButton onClick={handleRecover}>
-                    Recover {formatINR(demoCase.amountMinor)} <ArrowRight className="h-4 w-4" />
+                    Recover {formatINRMinor(caseData.amount_minor)} <ArrowRight className="h-4 w-4" />
                   </DemoButton>
                   <DemoButton variant="outline" onClick={handleEscalate}>
                     Escalate instead

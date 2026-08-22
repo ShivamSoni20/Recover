@@ -2,17 +2,38 @@ import { StateGraph, START, END, interrupt } from "@langchain/langgraph";
 import { RecoverStateAnnotation, type RecoverState } from "./state";
 import { fetchRazorpayOrder } from "../razorpay/orders";
 import { fetchRazorpayPayment, fetchPaymentsForOrder } from "../razorpay/payments";
-import { createRecoveryPaymentLink, cancelPaymentLink } from "../razorpay/payment-links";
+import {
+  createRecoveryPaymentLink,
+  fetchPaymentLink,
+  cancelPaymentLink,
+} from "../razorpay/payment-links";
 import { evaluateRecoveryGate } from "../domain/recovery-gate";
+import { getActiveRecoveryPolicy } from "../domain/recovery-policy";
 import { getRecoverModel } from "../ai/model";
 import { DiagnosisOutputSchema, ProposalOutputSchema } from "../ai/schemas";
 import { retrieveRecoveryKnowledge } from "../ai/rag-retriever";
 import { supabase } from "../db/supabase";
 
+async function updateCaseStatus(
+  caseId: string,
+  status: string,
+  terminalStatus?: string
+): Promise<void> {
+  const updatePayload: Record<string, unknown> = {
+    status,
+    updated_at: new Date().toISOString(),
+  };
+  if (terminalStatus) {
+    updatePayload.terminal_status = terminalStatus;
+  }
+  await supabase.from("recovery_cases").update(updatePayload).eq("id", caseId);
+}
+
 // ----------------------------------------------------------------------------
 // 1. canonicalize_original_state
 // ----------------------------------------------------------------------------
 export async function canonicalizeOriginalState(state: RecoverState): Promise<Partial<RecoverState>> {
+  await updateCaseStatus(state.caseId, "CANONICALIZING");
   const payment = await fetchRazorpayPayment(state.originalPaymentId);
   let order = undefined;
   let orderPayments: Array<{ id: string; status: string; captured: boolean; amountMinor: number }> = [];
@@ -70,10 +91,15 @@ export async function canonicalizeOriginalState(state: RecoverState): Promise<Pa
 // ----------------------------------------------------------------------------
 export async function checkAlreadyPaid(state: RecoverState): Promise<Partial<RecoverState>> {
   const isCaptured = state.canonicalPayment?.captured;
-  const isOrderPaid = state.canonicalOrder && state.canonicalOrder.amountPaidMinor >= (state.canonicalPayment?.amountMinor || 0);
-  const hasSiblingCaptured = state.orderPayments.some((p) => p.id !== state.originalPaymentId && p.captured);
+  const isOrderPaid =
+    state.canonicalOrder &&
+    state.canonicalOrder.amountPaidMinor >= (state.canonicalPayment?.amountMinor || 0);
+  const hasSiblingCaptured = state.orderPayments.some(
+    (p) => p.id !== state.originalPaymentId && p.captured
+  );
 
   if (isCaptured || isOrderPaid || hasSiblingCaptured) {
+    await updateCaseStatus(state.caseId, "STOPPED_ALREADY_PAID", "STOPPED_ALREADY_PAID");
     await supabase.from("case_events").insert({
       case_id: state.caseId,
       event_type: "STOPPED_ALREADY_PAID",
@@ -88,6 +114,7 @@ export async function checkAlreadyPaid(state: RecoverState): Promise<Partial<Rec
 // 3. retrieve_recovery_knowledge
 // ----------------------------------------------------------------------------
 export async function retrieveKnowledgeNode(state: RecoverState): Promise<Partial<RecoverState>> {
+  await updateCaseStatus(state.caseId, "RETRIEVING_KNOWLEDGE");
   const payment = state.canonicalPayment;
   const query = `Payment failure reason: ${payment?.errorReason || payment?.errorCode || "unknown"} source: ${payment?.errorSource || "unknown"} step: ${payment?.errorStep || "unknown"} method: ${payment?.method || "unknown"}`;
 
@@ -107,6 +134,7 @@ export async function retrieveKnowledgeNode(state: RecoverState): Promise<Partia
 // 4. diagnose_failure
 // ----------------------------------------------------------------------------
 export async function diagnoseFailureNode(state: RecoverState): Promise<Partial<RecoverState>> {
+  await updateCaseStatus(state.caseId, "DIAGNOSING");
   const payment = state.canonicalPayment;
   const knowledgeText = state.retrievedKnowledge
     .map((k) => `[Source: ${k.source}] ${k.content}`)
@@ -157,6 +185,7 @@ ${knowledgeText || "Standard Razorpay failure runbook applies."}
 // 5. propose_recovery
 // ----------------------------------------------------------------------------
 export async function proposeRecoveryNode(state: RecoverState): Promise<Partial<RecoverState>> {
+  await updateCaseStatus(state.caseId, "RECOVERY_PROPOSED");
   const diagnosis = state.diagnosis;
   const prompt = `Based on the diagnosed failure class '${diagnosis?.failureClass}' and summary '${diagnosis?.summary}', propose the safest recovery strategy.
 Allowed strategies: FRESH_CHECKOUT, WAIT_FOR_CANONICAL_UPDATE, MANUAL_REVIEW, STOP_ALREADY_PAID.
@@ -173,7 +202,13 @@ DO NOT SPECIFY OR MODIFY FINANCIAL AMOUNTS.`;
     data: { strategy: proposal.strategy },
   });
 
-  return { proposal };
+  return {
+    proposal: {
+      strategy: proposal.strategy,
+      explanation: proposal.explanation,
+      recommendedDelaySeconds: proposal.recommendedDelaySeconds ?? 0,
+    },
+  };
 }
 
 // ----------------------------------------------------------------------------
@@ -182,39 +217,55 @@ DO NOT SPECIFY OR MODIFY FINANCIAL AMOUNTS.`;
 export async function recoveryGateNode(state: RecoverState): Promise<Partial<RecoverState>> {
   if (!state.canonicalPayment) throw new Error("Canonical payment missing in recovery gate.");
 
+  const activePolicy = await getActiveRecoveryPolicy();
+
+  // Count actual prior attempts for this case from Supabase
+  const { data: existingActions } = await supabase
+    .from("recovery_actions")
+    .select("id, status")
+    .eq("case_id", state.caseId);
+
+  const attemptCount = (existingActions || []).filter((a) =>
+    ["CREATING", "CREATED", "UNCERTAIN", "PAID", "CANCELLED", "FAILED"].includes(a.status)
+  ).length;
+
   const gateResult = evaluateRecoveryGate({
     isTestMode: (process.env.RECOVER_RAZORPAY_MODE || "test") === "test",
     canonicalPayment: state.canonicalPayment,
     canonicalOrder: state.canonicalOrder,
     orderPayments: state.orderPayments,
-    existingActiveAction: state.action ? { id: state.action.actionId || "", status: state.action.status } : undefined,
-    attemptCount: 0,
+    existingActiveAction: existingActions?.find((a) => ["CREATING", "CREATED"].includes(a.status)),
+    attemptCount,
     failureClass: state.diagnosis?.failureClass || "UNKNOWN",
     confidence: state.diagnosis?.confidence || 0,
     proposedStrategy: state.proposal?.strategy || "MANUAL_REVIEW",
     policy: {
-      maxRecoveryAttempts: 2,
-      maxAutonomousAmountMinor: 1000000,
-      requireApprovalAboveMinor: 0, // Human approval required for all
-      allowFreshCheckout: true,
-      minDiagnosisConfidence: 0.7,
-      blockRiskOrPolicyFailures: true,
-      blockUnknownFailures: true,
+      maxRecoveryAttempts: activePolicy.maxRecoveryAttempts,
+      maxAutonomousAmountMinor: activePolicy.maxAutonomousAmountMinor,
+      requireApprovalAboveMinor: activePolicy.requireApprovalAboveMinor,
+      allowFreshCheckout: activePolicy.allowFreshCheckout,
+      minDiagnosisConfidence: activePolicy.minDiagnosisConfidence,
+      blockRiskOrPolicyFailures: activePolicy.blockRiskOrPolicyFailures,
+      blockUnknownFailures: activePolicy.blockUnknownFailures,
     },
   });
 
-  await supabase.from("action_authorizations").insert({
-    case_id: state.caseId,
-    policy_version_id: "00000000-0000-0000-0000-000000000001", // Or mapped ID
-    strategy: state.proposal?.strategy || "FRESH_CHECKOUT",
-    exact_amount_minor: gateResult.exactAmountMinor,
-    currency: gateResult.currency,
-    canonical_state_hash: `${state.canonicalPayment.id}_${state.canonicalPayment.status}`,
-    authorized: gateResult.authorized,
-    requires_approval: gateResult.requiresApproval,
-    reason_codes: gateResult.reasonCodes,
-    gate_checks: gateResult.gateChecks,
-  });
+  const { data: authRecord } = await supabase
+    .from("action_authorizations")
+    .insert({
+      case_id: state.caseId,
+      policy_version_id: activePolicy.id,
+      strategy: state.proposal?.strategy || "FRESH_CHECKOUT",
+      exact_amount_minor: gateResult.exactAmountMinor,
+      currency: gateResult.currency,
+      canonical_state_hash: `${state.canonicalPayment.id}_${state.canonicalPayment.status}`,
+      authorized: gateResult.authorized,
+      requires_approval: gateResult.requiresApproval,
+      reason_codes: gateResult.reasonCodes,
+      gate_checks: gateResult.gateChecks,
+    })
+    .select("id")
+    .single();
 
   await supabase.from("case_events").insert({
     case_id: state.caseId,
@@ -223,7 +274,16 @@ export async function recoveryGateNode(state: RecoverState): Promise<Partial<Rec
     data: { authorized: gateResult.authorized, reasonCodes: gateResult.reasonCodes },
   });
 
+  const nextStatus = gateResult.authorized ? "WAITING_APPROVAL" : "MANUAL_REVIEW";
+  await updateCaseStatus(state.caseId, nextStatus, gateResult.authorized ? undefined : "MANUAL_REVIEW");
+
   return {
+    policyVersionId: activePolicy.id,
+    action: {
+      actionId: authRecord?.id,
+      referenceId: `rcv_${state.caseId.slice(0, 8)}_${attemptCount + 1}`,
+      status: "NOT_STARTED",
+    },
     gate: {
       authorized: gateResult.authorized,
       requiresApproval: gateResult.requiresApproval,
@@ -240,13 +300,13 @@ export async function recoveryGateNode(state: RecoverState): Promise<Partial<Rec
 // 7. await_approval (Interrupt for Reviewer)
 // ----------------------------------------------------------------------------
 export async function awaitApprovalNode(state: RecoverState): Promise<Partial<RecoverState>> {
+  await updateCaseStatus(state.caseId, "WAITING_APPROVAL");
   await supabase.from("case_events").insert({
     case_id: state.caseId,
     event_type: "AWAITING_APPROVAL",
     label: "Awaiting operator approval",
   });
 
-  // LangGraph interrupt for human in the loop
   const decision = interrupt({
     type: "RECOVERY_APPROVAL",
     caseId: state.caseId,
@@ -258,6 +318,7 @@ export async function awaitApprovalNode(state: RecoverState): Promise<Partial<Re
   }) as { decision: "APPROVE_RECOVERY" | "ESCALATE" | "REJECT" };
 
   if (decision.decision === "APPROVE_RECOVERY") {
+    await updateCaseStatus(state.caseId, "RECOVERY_APPROVED");
     await supabase.from("case_events").insert({
       case_id: state.caseId,
       event_type: "RECOVERY_APPROVED",
@@ -265,6 +326,7 @@ export async function awaitApprovalNode(state: RecoverState): Promise<Partial<Re
     });
     return { approval: { status: "APPROVED", decisionBy: "operator" } };
   } else {
+    await updateCaseStatus(state.caseId, "MANUAL_REVIEW", "MANUAL_REVIEW");
     await supabase.from("case_events").insert({
       case_id: state.caseId,
       event_type: "MANUAL_REVIEW",
@@ -281,8 +343,18 @@ export async function awaitApprovalNode(state: RecoverState): Promise<Partial<Re
 // 8. preflight_revalidate
 // ----------------------------------------------------------------------------
 export async function preflightRevalidateNode(state: RecoverState): Promise<Partial<RecoverState>> {
+  await updateCaseStatus(state.caseId, "PREFLIGHT_CHECK");
   const payment = await fetchRazorpayPayment(state.originalPaymentId);
-  if (payment.captured || payment.status === "captured") {
+  let orderPaid = false;
+
+  if (payment.order_id) {
+    const rawOrder = await fetchRazorpayOrder(payment.order_id);
+    const payments = await fetchPaymentsForOrder(payment.order_id);
+    orderPaid = rawOrder.status === "paid" || payments.some((p) => p.captured || p.status === "captured");
+  }
+
+  if (payment.captured || payment.status === "captured" || orderPaid) {
+    await updateCaseStatus(state.caseId, "STOPPED_ALREADY_PAID", "STOPPED_ALREADY_PAID");
     await supabase.from("case_events").insert({
       case_id: state.caseId,
       event_type: "STOPPED_ALREADY_PAID",
@@ -301,54 +373,120 @@ export async function preflightRevalidateNode(state: RecoverState): Promise<Part
 }
 
 // ----------------------------------------------------------------------------
-// 9. create_recovery_link
+// 9. create_recovery_link (With durable intent first)
 // ----------------------------------------------------------------------------
 export async function createRecoveryLinkNode(state: RecoverState): Promise<Partial<RecoverState>> {
-  const shortId = state.caseId.slice(0, 8);
-  const referenceId = `rcv_${shortId}_1`;
+  await updateCaseStatus(state.caseId, "CREATING_RECOVERY_LINK");
+  const referenceId = state.action?.referenceId || `rcv_${state.caseId.slice(0, 8)}_1`;
 
-  const link = await createRecoveryPaymentLink({
-    amountMinor: state.gate!.exactAmountMinor,
-    currency: state.gate!.currency,
-    referenceId,
-    description: `Recovery Checkout for ${state.originalOrderId || state.originalPaymentId}`,
-    notes: {
+  // 1. Create durable intent record before external network call
+  const { data: actionRow } = await supabase
+    .from("recovery_actions")
+    .upsert({
       case_id: state.caseId,
-      original_payment_id: state.originalPaymentId,
-    },
-  });
+      reference_id: referenceId,
+      amount_minor: state.gate!.exactAmountMinor,
+      currency: state.gate!.currency,
+      status: "CREATING",
+    }, { onConflict: "reference_id" })
+    .select("id")
+    .single();
 
-  await supabase.from("recovery_actions").insert({
-    case_id: state.caseId,
-    reference_id: referenceId,
-    payment_link_id: link.id,
-    short_url: link.short_url,
-    amount_minor: link.amount,
-    currency: link.currency,
-    status: "CREATED",
-  });
-
-  await supabase.from("case_events").insert({
-    case_id: state.caseId,
-    event_type: "PAYMENT_LINK_CREATED",
-    label: "Recovery Payment Link created",
-    data: { paymentLinkId: link.id, shortUrl: link.short_url, referenceId },
-  });
-
-  return {
-    action: {
+  try {
+    const link = await createRecoveryPaymentLink({
+      amountMinor: state.gate!.exactAmountMinor,
+      currency: state.gate!.currency,
       referenceId,
-      paymentLinkId: link.id,
-      shortUrl: link.short_url,
-      status: "CREATED",
-    },
-  };
+      description: `Recovery Checkout for ${state.originalOrderId || state.originalPaymentId}`,
+      notes: {
+        case_id: state.caseId,
+        original_payment_id: state.originalPaymentId,
+      },
+    });
+
+    await supabase
+      .from("recovery_actions")
+      .update({
+        payment_link_id: link.id,
+        short_url: link.short_url,
+        status: "CREATED",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("reference_id", referenceId);
+
+    await updateCaseStatus(state.caseId, "RECOVERY_LINK_READY");
+
+    await supabase.from("case_events").insert({
+      case_id: state.caseId,
+      event_type: "PAYMENT_LINK_CREATED",
+      label: "Recovery Payment Link created",
+      data: { paymentLinkId: link.id, shortUrl: link.short_url, referenceId },
+    });
+
+    return {
+      action: {
+        actionId: actionRow?.id,
+        referenceId,
+        paymentLinkId: link.id,
+        shortUrl: link.short_url,
+        status: "CREATED",
+      },
+    };
+  } catch (err) {
+    console.error("[Create Link Uncertain Error]:", err);
+    await supabase
+      .from("recovery_actions")
+      .update({ status: "UNCERTAIN" })
+      .eq("reference_id", referenceId);
+
+    return {
+      action: {
+        actionId: actionRow?.id,
+        referenceId,
+        status: "UNCERTAIN",
+      },
+    };
+  }
 }
 
 // ----------------------------------------------------------------------------
-// 10. await_recovery_event (Interrupt waiting for webhook)
+// 10. reconcile_link_creation (Handles uncertainty / network drops)
+// ----------------------------------------------------------------------------
+export async function reconcileLinkCreationNode(state: RecoverState): Promise<Partial<RecoverState>> {
+  const referenceId = state.action?.referenceId;
+  if (!referenceId) return { terminalStatus: "FAILED_SAFE" };
+
+  try {
+    // Check if recovery link was created using reference query or fallback
+    const { data: action } = await supabase
+      .from("recovery_actions")
+      .select("*")
+      .eq("reference_id", referenceId)
+      .maybeSingle();
+
+    if (action?.payment_link_id) {
+      const link = await fetchPaymentLink(action.payment_link_id);
+      return {
+        action: {
+          ...state.action!,
+          paymentLinkId: link.id,
+          shortUrl: link.short_url,
+          status: "CREATED",
+        },
+      };
+    }
+  } catch (err) {
+    console.warn("[Reconcile Link Notice]:", err);
+  }
+
+  return { terminalStatus: "FAILED_SAFE" };
+}
+
+// ----------------------------------------------------------------------------
+// 11. await_recovery_event (Interrupt waiting for webhook)
 // ----------------------------------------------------------------------------
 export async function awaitRecoveryEventNode(state: RecoverState): Promise<Partial<RecoverState>> {
+  await updateCaseStatus(state.caseId, "WAITING_RECOVERY_PAYMENT");
   await supabase.from("case_events").insert({
     case_id: state.caseId,
     event_type: "WAITING_RECOVERY_PAYMENT",
@@ -359,7 +497,7 @@ export async function awaitRecoveryEventNode(state: RecoverState): Promise<Parti
     type: "AWAIT_PAYMENT_EVENT",
     caseId: state.caseId,
     paymentLinkId: state.action?.paymentLinkId,
-  }) as { eventType: string; paymentId: string; amountMinor: number };
+  }) as { eventType: string; paymentId: string };
 
   return {
     action: {
@@ -371,22 +509,51 @@ export async function awaitRecoveryEventNode(state: RecoverState): Promise<Parti
 }
 
 // ----------------------------------------------------------------------------
-// 11. verify_recovery
+// 12. handle_original_late_capture (Cancels link if original payment captures)
+// ----------------------------------------------------------------------------
+export async function handleOriginalLateCaptureNode(state: RecoverState): Promise<Partial<RecoverState>> {
+  if (state.action?.paymentLinkId) {
+    try {
+      await cancelPaymentLink(state.action.paymentLinkId);
+    } catch {
+      // Ignore if already cancelled or paid
+    }
+  }
+
+  await updateCaseStatus(state.caseId, "STOPPED_ALREADY_PAID", "STOPPED_ALREADY_PAID");
+  await supabase.from("case_events").insert({
+    case_id: state.caseId,
+    event_type: "PAYMENT_LINK_CANCELLED_DUE_TO_ORIGINAL_CAPTURE",
+    label: "Original payment was captured late; recovery checkout cancelled",
+  });
+
+  return { terminalStatus: "STOPPED_ALREADY_PAID" };
+}
+
+// ----------------------------------------------------------------------------
+// 13. verify_recovery (Canonical Verification against Provider)
 // ----------------------------------------------------------------------------
 export async function verifyRecoveryNode(state: RecoverState): Promise<Partial<RecoverState>> {
   const action = state.action;
   const paymentId = action?.recoveryPaymentId;
   if (!paymentId) throw new Error("Recovery payment ID missing during verification.");
 
+  await updateCaseStatus(state.caseId, "VERIFYING");
   await supabase.from("case_events").insert({
     case_id: state.caseId,
     event_type: "VERIFICATION_STARTED",
     label: "Independent verification running",
   });
 
-  // Re-fetch canonical state independently
+  // Re-fetch canonical state independently from Razorpay
   const recoveryPayment = await fetchRazorpayPayment(paymentId);
   const originalPayment = await fetchRazorpayPayment(state.originalPaymentId);
+  let linkPaid = true;
+
+  if (action?.paymentLinkId) {
+    const link = await fetchPaymentLink(action.paymentLinkId);
+    linkPaid = link.status === "paid";
+  }
 
   const checks = [
     {
@@ -396,6 +563,12 @@ export async function verifyRecoveryNode(state: RecoverState): Promise<Partial<R
       passed: recoveryPayment.captured || recoveryPayment.status === "captured",
     },
     {
+      key: "payment_link_paid",
+      expected: true,
+      observed: linkPaid,
+      passed: linkPaid,
+    },
+    {
       key: "amount_exact",
       expected: state.gate!.exactAmountMinor,
       observed: recoveryPayment.amount,
@@ -403,9 +576,9 @@ export async function verifyRecoveryNode(state: RecoverState): Promise<Partial<R
     },
     {
       key: "currency_exact",
-      expected: "INR",
+      expected: state.gate!.currency,
       observed: recoveryPayment.currency,
-      passed: recoveryPayment.currency === "INR",
+      passed: recoveryPayment.currency === state.gate!.currency,
     },
     {
       key: "no_double_collection",
@@ -436,6 +609,14 @@ export async function verifyRecoveryNode(state: RecoverState): Promise<Partial<R
     status: receiptStatus,
   });
 
+  const terminalStatus = allPassed
+    ? "RECOVERED_VERIFIED"
+    : isDoublePayment
+      ? "DOUBLE_PAYMENT_RISK"
+      : "FAILED_SAFE";
+
+  await updateCaseStatus(state.caseId, terminalStatus, terminalStatus);
+
   await supabase.from("case_events").insert({
     case_id: state.caseId,
     event_type: allPassed ? "VERIFICATION_PASSED" : "VERIFICATION_FAILED",
@@ -448,11 +629,7 @@ export async function verifyRecoveryNode(state: RecoverState): Promise<Partial<R
       status: receiptStatus,
       checks,
     },
-    terminalStatus: allPassed
-      ? "RECOVERED_VERIFIED"
-      : isDoublePayment
-        ? "DOUBLE_PAYMENT_RISK"
-        : "FAILED_SAFE",
+    terminalStatus,
   };
 }
 
@@ -470,7 +647,9 @@ export function createRecoverGraph() {
     .addNode("await_approval", awaitApprovalNode)
     .addNode("preflight_revalidate", preflightRevalidateNode)
     .addNode("create_recovery_link", createRecoveryLinkNode)
+    .addNode("reconcile_link_creation", reconcileLinkCreationNode)
     .addNode("await_recovery_event", awaitRecoveryEventNode)
+    .addNode("handle_original_late_capture", handleOriginalLateCaptureNode)
     .addNode("verify_recovery", verifyRecoveryNode);
 
   // Edges
@@ -497,7 +676,16 @@ export function createRecoverGraph() {
     return state.terminalStatus === "STOPPED_ALREADY_PAID" ? END : "create_recovery_link";
   });
 
-  workflow.addEdge("create_recovery_link", "await_recovery_event");
+  workflow.addConditionalEdges("create_recovery_link", (state) => {
+    return state.action?.status === "UNCERTAIN"
+      ? "reconcile_link_creation"
+      : "await_recovery_event";
+  });
+
+  workflow.addConditionalEdges("reconcile_link_creation", (state) => {
+    return state.terminalStatus === "FAILED_SAFE" ? END : "await_recovery_event";
+  });
+
   workflow.addEdge("await_recovery_event", "verify_recovery");
   workflow.addEdge("verify_recovery", END);
 

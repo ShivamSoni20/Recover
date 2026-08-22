@@ -1,12 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, ExternalLink, Loader2 } from "lucide-react";
 import { DemoButton, Field, PaymentStatusBadge, Panel, StepRow } from "@/components/demo/ui";
-import { RecoveryCheckoutModal } from "@/components/demo/modals";
-import { updateCase, useDemoCase } from "@/lib/demo/store";
-import { formatINR } from "@/lib/demo/types";
+import { getCaseFn } from "@/lib/api/server-fns";
+import { formatINRMinor } from "@/lib/domain/money";
 
-const title = "Recovery checkout created — Recover Demo";
+const title = "Recovery checkout created — Recover";
 const description =
   "A fresh recovery checkout was created after the deterministic Recovery Gate authorized the action.";
 
@@ -27,26 +26,54 @@ export const Route = createFileRoute("/demo/recovery/$id/checkout")({
 function RecoveryCheckout() {
   const { id } = Route.useParams();
   const navigate = useNavigate();
-  const demoCase = useDemoCase(id);
-  const [open, setOpen] = useState(false);
+  const [caseData, setCaseData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
-  if (!demoCase) {
+  const loadCase = async () => {
+    try {
+      const data = await getCaseFn({ data: id });
+      if (data) setCaseData(data);
+      // Auto-navigate to verify if payment received
+      if (data?.status === "VERIFYING" || data?.terminal_status === "RECOVERED_VERIFIED") {
+        navigate({ to: "/demo/recovery/$id/verify", params: { id } });
+      }
+    } catch (err) {
+      console.error("[Fetch Action Error]:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadCase();
+    const interval = setInterval(loadCase, 2000);
+    return () => clearInterval(interval);
+  }, [id]);
+
+  if (loading && !caseData) {
     return (
-      <main className="mx-auto w-full max-w-2xl px-6 py-20 text-center">
-        <h1 className="text-xl font-bold tracking-tight text-foreground">Demo case not found</h1>
-        <DemoButton className="mt-6" onClick={() => navigate({ to: "/demo" })}>
-          Back to demo
-        </DemoButton>
+      <main className="mx-auto flex w-full max-w-2xl flex-col items-center justify-center px-6 py-24 text-center">
+        <Loader2 className="h-8 w-8 animate-spin text-brand" />
+        <p className="mt-4 text-sm font-semibold text-foreground">Loading recovery checkout details...</p>
       </main>
     );
   }
 
-  const handleSuccess = () => {
-    updateCase(demoCase.caseId, { state: "WAITING_RECOVERY_PAYMENT" });
-    updateCase(demoCase.caseId, { state: "PAYMENT_SUBMITTED" }, "Recovery payment submitted");
-    setOpen(false);
-    navigate({ to: "/demo/recovery/$id/verify", params: { id: demoCase.caseId } });
-  };
+  const action = caseData?.recovery_actions?.[0];
+
+  if (!caseData || !action) {
+    return (
+      <main className="mx-auto w-full max-w-2xl px-6 py-20 text-center">
+        <h1 className="text-xl font-bold tracking-tight text-foreground">Recovery action not found</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Waiting for Recovery Payment Link creation in backend...
+        </p>
+        <DemoButton className="mt-6" onClick={() => navigate({ to: "/demo" })}>
+          Back to overview
+        </DemoButton>
+      </main>
+    );
+  }
 
   const stepper: { label: string; state: "done" | "active" | "pending" }[] = [
     { label: "Failed payment", state: "done" },
@@ -56,6 +83,15 @@ function RecoveryCheckout() {
     { label: "Customer payment", state: "active" },
     { label: "Verification", state: "pending" },
   ];
+
+  const handleOpenHostedLink = () => {
+    if (action.short_url) {
+      window.open(action.short_url, "_blank");
+    } else if (action.payment_link_id) {
+      window.open(`https://rzp.io/i/${action.payment_link_id}`, "_blank");
+    }
+    navigate({ to: "/demo/recovery/$id/verify", params: { id } });
+  };
 
   return (
     <main className="mx-auto w-full max-w-5xl px-6 py-12">
@@ -69,23 +105,27 @@ function RecoveryCheckout() {
           }
         >
           <div className="divide-y divide-border/70">
-            <Field label="Amount" value={formatINR(demoCase.amountMinor)} />
+            <Field label="Amount" value={formatINRMinor(action.amount_minor)} />
             <Field label="Action" value="Fresh checkout" />
-            <Field label="Reference" value={demoCase.recoveryReference} />
-            <Field label="Payment Link" value={demoCase.recoveryLinkId} />
-            <Field label="Status" value={<PaymentStatusBadge status="ACTIVE" />} />
+            <Field label="Reference" value={action.reference_id} />
+            <Field label="Payment Link ID" value={action.payment_link_id || "Creating..."} />
+            <Field label="Status" value={<PaymentStatusBadge status={action.status || "ACTIVE"} />} />
           </div>
-          <DemoButton
-            className="mt-6 w-full sm:w-auto"
-            onClick={() => {
-              if (demoCase.recoveryLinkId && !demoCase.recoveryLinkId.startsWith("plink_demo_")) {
-                window.open(`https://rzp.io/i/${demoCase.recoveryLinkId}`, "_blank");
-              }
-              setOpen(true);
-            }}
-          >
-            Open Recovery Checkout <ArrowRight className="h-4 w-4" />
-          </DemoButton>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <DemoButton className="w-full sm:w-auto" onClick={handleOpenHostedLink}>
+              Open Hosted Recovery Checkout <ExternalLink className="h-4 w-4" />
+            </DemoButton>
+            <DemoButton
+              variant="outline"
+              className="w-full sm:w-auto"
+              onClick={() => navigate({ to: "/demo/recovery/$id/verify", params: { id } })}
+            >
+              I Completed Payment → Verify <ArrowRight className="h-4 w-4" />
+            </DemoButton>
+          </div>
+          <p className="mt-3 text-[11px] text-muted-foreground">
+            Clicking opens the real Razorpay-hosted sandbox payment link in a new tab.
+          </p>
         </Panel>
 
         <Panel title="Recovery progress">
@@ -101,14 +141,6 @@ function RecoveryCheckout() {
           </ul>
         </Panel>
       </div>
-
-      <RecoveryCheckoutModal
-        open={open}
-        onOpenChange={setOpen}
-        mode="recovery"
-        amountMinor={demoCase.amountMinor}
-        onOutcome={handleSuccess}
-      />
     </main>
   );
 }

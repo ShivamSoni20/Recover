@@ -52,6 +52,31 @@ export const createTestPaymentFn = createServerFn({ method: "POST" })
     };
   });
 
+export const getSessionStatusFn = createServerFn({ method: "GET" })
+  .validator((sessionId: string) => sessionId)
+  .handler(async ({ data: sessionId }) => {
+    const { data: session } = await supabase
+      .from("test_payment_sessions")
+      .select("order_id, status")
+      .eq("session_id", sessionId)
+      .maybeSingle();
+
+    if (!session?.order_id) return null;
+
+    const { data: recoveryCase } = await supabase
+      .from("recovery_cases")
+      .select("id, case_number, status")
+      .eq("original_order_id", session.order_id)
+      .maybeSingle();
+
+    return {
+      orderId: session.order_id,
+      sessionStatus: session.status,
+      caseId: recoveryCase?.id || null,
+      caseNumber: recoveryCase?.case_number || null,
+    };
+  });
+
 export const getCaseFn = createServerFn({ method: "GET" })
   .validator((caseId: string) => caseId)
   .handler(async ({ data: caseId }) => {
@@ -88,12 +113,27 @@ export const submitDecisionFn = createServerFn({ method: "POST" })
 export const getMetricsFn = createServerFn({ method: "GET" }).handler(async () => {
   const { data: cases } = await supabase
     .from("recovery_cases")
-    .select("amount_minor, terminal_status");
+    .select(`
+      amount_minor,
+      terminal_status,
+      verification_receipts(amount_minor, status)
+    `);
 
   const allCases = cases || [];
   const totalAtRisk = allCases.reduce((sum, c) => sum + Number(c.amount_minor), 0);
-  const verifiedCases = allCases.filter((c) => c.terminal_status === "RECOVERED_VERIFIED");
-  const totalRecovered = verifiedCases.reduce((sum, c) => sum + Number(c.amount_minor), 0);
+
+  // Derive verified recovered amounts strictly from verified receipts
+  let totalRecovered = 0;
+  let verifiedCount = 0;
+  for (const c of allCases) {
+    const receipts = (c.verification_receipts as Array<{ amount_minor: number; status: string }>) || [];
+    const verifiedReceipt = receipts.find((r) => r.status === "VERIFIED");
+    if (verifiedReceipt && c.terminal_status === "RECOVERED_VERIFIED") {
+      totalRecovered += Number(verifiedReceipt.amount_minor);
+      verifiedCount++;
+    }
+  }
+
   const safeStops = allCases.filter((c) => c.terminal_status === "STOPPED_ALREADY_PAID").length;
   const manualReviewCount = allCases.filter((c) => c.terminal_status === "MANUAL_REVIEW").length;
   const recoveryRate = totalAtRisk > 0 ? Math.round((totalRecovered / totalAtRisk) * 100) : 0;
