@@ -87,10 +87,8 @@ function RecoveryCheckout() {
   const handleOpenHostedLink = () => {
     if (action.short_url) {
       window.open(action.short_url, "_blank");
-    } else if (action.payment_link_id) {
-      window.open(`https://rzp.io/i/${action.payment_link_id}`, "_blank");
+      navigate({ to: "/demo/recovery/$id/verify", params: { id } });
     }
-    navigate({ to: "/demo/recovery/$id/verify", params: { id } });
   };
 
   return (
@@ -112,9 +110,13 @@ function RecoveryCheckout() {
             <Field label="Status" value={<PaymentStatusBadge status={action.status || "ACTIVE"} />} />
           </div>
           <div className="mt-6 flex flex-wrap gap-3">
-            <DemoButton className="w-full sm:w-auto" onClick={handleOpenHostedLink}>
-              Open Hosted Recovery Checkout <ExternalLink className="h-4 w-4" />
-            </DemoButton>
+            {action.short_url ? (
+              <DemoButton className="w-full sm:w-auto" onClick={handleOpenHostedLink}>
+                Open Hosted Recovery Checkout <ExternalLink className="h-4 w-4" />
+              </DemoButton>
+            ) : (
+              <p className="text-xs text-danger">Canonical Razorpay hosted checkout URL unavailable.</p>
+            )}
             <DemoButton
               variant="outline"
               className="w-full sm:w-auto"

@@ -363,7 +363,10 @@ function CreatePayment() {
         return;
       }
 
-      if (res.status === "NO_PAYMENT_ATTEMPT_FOUND") {
+      if (res.status === "SESSION_NOT_FOUND") {
+        setErrorMessage("Recover could not find the durable test session for this payment.");
+        setCheckoutState("ERROR");
+      } else if (res.status === "NO_PAYMENT_ATTEMPT_FOUND") {
         setErrorMessage("Razorpay reports no payment attempts on this order yet. Try completing or failing a payment in Checkout.");
       } else {
         setErrorMessage(`Provider status: ${res.status}. Payment is not in failed state.`);

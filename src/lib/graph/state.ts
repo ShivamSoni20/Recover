@@ -52,7 +52,7 @@ export interface DiagnosisState {
 export interface ProposalState {
   strategy: RecoveryStrategy;
   explanation: string;
-  recommendedDelaySeconds: number;
+  recommendedDelaySeconds?: number;
 }
 
 export interface GateState {

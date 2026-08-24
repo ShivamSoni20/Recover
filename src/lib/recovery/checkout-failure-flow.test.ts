@@ -8,6 +8,8 @@ import { supabase } from "@/lib/db/supabase";
 describe("Razorpay Test Checkout Failure-Handling & Recovery Specification", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(runnerMod, "startRecoveryWorkflow").mockResolvedValue(undefined);
+    vi.spyOn(runnerMod, "ensureRecoveryWorkflowStarted").mockResolvedValue(undefined);
   });
 
   // Test 1: Modal dismiss without payment attempt -> no failed state / no case

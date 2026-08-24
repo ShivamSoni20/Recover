@@ -77,120 +77,210 @@ export default {
           providerEventId = `evt_${nodeCrypto.createHash("sha256").update(`${eventType}_${rawBody}`).digest("hex").slice(0, 24)}`;
         }
 
-        const { error: insertError } = await supabase.from("webhook_events").insert({
-          provider_event_id: providerEventId,
-          event_type: eventType,
-          signature_valid: true,
-          raw_payload: payload,
-        });
+        // 1. Check existing webhook event record for idempotency & retry lifecycle
+        const { data: existingEvent } = await supabase
+          .from("webhook_events")
+          .select("id, processing_status, processed_at")
+          .eq("provider_event_id", providerEventId)
+          .maybeSingle();
 
-        if (insertError) {
-          // If duplicate key violation, return 200 already_processed
-          if (insertError.code === "23505" || insertError.message?.includes("duplicate")) {
-            return new Response(JSON.stringify({ status: "already_processed" }), {
+        if (existingEvent) {
+          if (existingEvent.processed_at != null || existingEvent.processing_status === "PROCESSED") {
+            return new Response(JSON.stringify({ status: "already_processed", eventType }), {
               status: 200,
               headers: { "content-type": "application/json" },
             });
           }
-          // On genuine DB failure, return 500 so Razorpay retries
-          return new Response(JSON.stringify({ error: "Database error persisting webhook" }), {
-            status: 500,
-            headers: { "content-type": "application/json" },
-          });
-        }
-
-        // 1. payment.failed -> Canonical verification & recovery case creation
-        if (eventType === "payment.failed") {
-          const paymentEntity = payload.payload?.payment?.entity;
-          if (paymentEntity?.id) {
-            await processCanonicalFailedPayment({
-              paymentId: paymentEntity.id,
-              orderId: paymentEntity.order_id,
-              provenance: "WEBHOOK",
+          if (existingEvent.processing_status === "PROCESSING") {
+            // Concurrent delivery in-flight
+            return new Response(JSON.stringify({ status: "concurrent_processing" }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
             });
           }
-        }
+        } else {
+          // Insert initial inbox entry
+          const { error: insertError } = await supabase.from("webhook_events").insert({
+            provider_event_id: providerEventId,
+            event_type: eventType,
+            signature_valid: true,
+            raw_payload: payload,
+            processing_status: "RECEIVED",
+          });
 
-        // 2. payment_link.paid & payment.captured -> Recovery action fulfillment
-        if (eventType === "payment_link.paid" || eventType === "payment.captured") {
-          const paymentEntity = payload.payload?.payment?.entity;
-          const linkEntity = payload.payload?.payment_link?.entity;
+          if (insertError) {
+            // If duplicate race on provider_event_id, inspect status
+            if (insertError.code === "23505" || insertError.message?.includes("duplicate")) {
+              const { data: racedEvent } = await supabase
+                .from("webhook_events")
+                .select("processing_status, processed_at")
+                .eq("provider_event_id", providerEventId)
+                .maybeSingle();
 
-          const paymentLinkId = linkEntity?.id || paymentEntity?.notes?.payment_link_id;
-          const paymentId = paymentEntity?.id;
-
-          if (paymentLinkId) {
-            const { data: action } = await supabase
-              .from("recovery_actions")
-              .select("case_id, accepted_success_event_id")
-              .eq("payment_link_id", paymentLinkId)
-              .maybeSingle();
-
-            if (action?.case_id && !action.accepted_success_event_id) {
-              await supabase
-                .from("recovery_actions")
-                .update({
-                  accepted_success_event_id: providerEventId,
-                  recovery_payment_id: paymentId,
-                  updated_at: new Date().toISOString(),
-                })
-                .eq("payment_link_id", paymentLinkId);
-
-              await resumeWorkflowWithPaymentEvent(action.case_id, {
-                eventType,
-                paymentId: paymentId || "unknown",
-                amountMinor: paymentEntity?.amount || 0,
+              if (racedEvent && (racedEvent.processed_at != null || racedEvent.processing_status === "PROCESSED")) {
+                return new Response(JSON.stringify({ status: "already_processed" }), {
+                  status: 200,
+                  headers: { "content-type": "application/json" },
+                });
+              }
+            } else {
+              return new Response(JSON.stringify({ error: "Database error persisting webhook" }), {
+                status: 500,
+                headers: { "content-type": "application/json" },
               });
             }
           }
         }
 
-        // 3. payment_link.cancelled -> Update recovery action status
-        if (eventType === "payment_link.cancelled") {
-          const linkEntity = payload.payload?.payment_link?.entity;
-          const paymentLinkId = linkEntity?.id;
-          if (paymentLinkId) {
-            await supabase
-              .from("recovery_actions")
-              .update({
-                status: "CANCELLED",
-                updated_at: new Date().toISOString(),
-              })
-              .eq("payment_link_id", paymentLinkId);
-          }
-        }
-
-        // 4. order.paid -> Update test payment session status
-        if (eventType === "order.paid") {
-          const orderEntity = payload.payload?.order?.entity;
-          const orderId = orderEntity?.id;
-          if (orderId) {
-            await supabase
-              .from("test_payment_sessions")
-              .update({
-                status: "PAID",
-                updated_at: new Date().toISOString(),
-              })
-              .eq("order_id", orderId);
-          }
-        }
-
-        // Mark processed_at timestamp on webhook event record
-        await supabase
+        // 2. Atomic claim of event for processing
+        const { data: claimedEvent } = await supabase
           .from("webhook_events")
-          .update({ processed_at: new Date().toISOString() })
-          .eq("provider_event_id", providerEventId);
+          .update({
+            processing_status: "PROCESSING",
+            processing_started_at: new Date().toISOString(),
+          })
+          .eq("provider_event_id", providerEventId)
+          .neq("processing_status", "PROCESSED")
+          .select("id")
+          .maybeSingle();
 
-        return new Response(JSON.stringify({ status: "processed", eventType }), {
-          status: 200,
+        if (!claimedEvent) {
+          return new Response(JSON.stringify({ status: "already_claimed_or_processed" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        try {
+          // 3. Process according to event type
+          if (eventType === "payment.failed") {
+            const paymentEntity = payload.payload?.payment?.entity;
+            if (paymentEntity?.id) {
+              await processCanonicalFailedPayment({
+                paymentId: paymentEntity.id,
+                orderId: paymentEntity.order_id,
+                provenance: "WEBHOOK",
+              });
+            }
+          }
+
+          if (eventType === "payment_link.paid" || eventType === "payment.captured") {
+            const paymentEntity = payload.payload?.payment?.entity;
+            const linkEntity = payload.payload?.payment_link?.entity;
+
+            const paymentLinkId = linkEntity?.id || paymentEntity?.notes?.payment_link_id;
+            const paymentId = paymentEntity?.id;
+
+            if (paymentLinkId) {
+              // Atomic claim on recovery action: exactly one success event resumes workflow
+              const { data: claimedAction } = await supabase
+                .from("recovery_actions")
+                .update({
+                  accepted_success_event_id: providerEventId,
+                  recovery_payment_id: paymentId,
+                  status: "PAID",
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("payment_link_id", paymentLinkId)
+                .is("accepted_success_event_id", null)
+                .select("case_id, payment_link_id")
+                .maybeSingle();
+
+              if (claimedAction?.case_id) {
+                await resumeWorkflowWithPaymentEvent(claimedAction.case_id, {
+                  kind: "RECOVERY_PAYMENT_CAPTURED",
+                  eventType,
+                  paymentId: paymentId || "unknown",
+                  paymentLinkId,
+                  amountMinor: paymentEntity?.amount || 0,
+                  providerEventId,
+                });
+              }
+            } else if (eventType === "payment.captured" && paymentId) {
+              // Check if original payment was captured late
+              const { data: originalCase } = await supabase
+                .from("recovery_cases")
+                .select("id, status, terminal_status")
+                .eq("original_payment_id", paymentId)
+                .maybeSingle();
+
+              if (
+                originalCase &&
+                !["RECOVERED_VERIFIED", "STOPPED_ALREADY_PAID"].includes(originalCase.terminal_status || "")
+              ) {
+                await resumeWorkflowWithPaymentEvent(originalCase.id, {
+                  kind: "ORIGINAL_PAYMENT_CAPTURED",
+                  eventType,
+                  paymentId,
+                  providerEventId,
+                });
+              }
+            }
+          }
+
+          if (eventType === "payment_link.cancelled") {
+            const linkEntity = payload.payload?.payment_link?.entity;
+            const paymentLinkId = linkEntity?.id;
+            if (paymentLinkId) {
+              await supabase
+                .from("recovery_actions")
+                .update({
+                  status: "CANCELLED",
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("payment_link_id", paymentLinkId);
+            }
+          }
+
+          if (eventType === "order.paid") {
+            const orderEntity = payload.payload?.order?.entity;
+            const orderId = orderEntity?.id;
+            if (orderId) {
+              await supabase
+                .from("test_payment_sessions")
+                .update({
+                  status: "PAID",
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("order_id", orderId);
+            }
+          }
+
+          // 4. Mark PROCESSED on successful completion
+          await supabase
+            .from("webhook_events")
+            .update({
+              processing_status: "PROCESSED",
+              processed_at: new Date().toISOString(),
+              last_error: null,
+            })
+            .eq("provider_event_id", providerEventId);
+
+          return new Response(JSON.stringify({ status: "processed", eventType }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        } catch (procErr: unknown) {
+          console.error(`[Webhook Processing Failure for event ${providerEventId}]:`, procErr);
+          await supabase
+            .from("webhook_events")
+            .update({
+              processing_status: "FAILED_RETRYABLE",
+              last_error: procErr instanceof Error ? procErr.message : "Processing error",
+            })
+            .eq("provider_event_id", providerEventId);
+
+          return new Response(JSON.stringify({ error: "Webhook processing failed" }), {
+            status: 500,
+            headers: { "content-type": "application/json" },
+          });
+        }
+      } catch (err: unknown) {
+        console.error("[Webhook Outer Error]:", err);
+        return new Response(JSON.stringify({ error: "Webhook error" }), {
+          status: 500,
           headers: { "content-type": "application/json" },
         });
-      } catch (err: unknown) {
-        console.error("[Webhook Error]:", err);
-        return new Response(
-          JSON.stringify({ error: err instanceof Error ? err.message : "Webhook error" }),
-          { status: 500, headers: { "content-type": "application/json" } }
-        );
       }
     }
 

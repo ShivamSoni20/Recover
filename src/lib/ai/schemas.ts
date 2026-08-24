@@ -1,4 +1,4 @@
-import { z } from "zod";
+﻿import { z } from "zod";
 
 export const FailureClassSchema = z.enum([
   "CUSTOMER_CORRECTABLE",
@@ -16,7 +16,6 @@ export type FailureClass = z.infer<typeof FailureClassSchema>;
 
 export const RecoveryStrategySchema = z.enum([
   "FRESH_CHECKOUT",
-  "WAIT_FOR_CANONICAL_UPDATE",
   "MANUAL_REVIEW",
   "STOP_ALREADY_PAID",
 ]);

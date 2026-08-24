@@ -1,4 +1,4 @@
-import { razorpayRequest } from "./client";
+﻿import { razorpayRequest } from "./client";
 
 export interface RazorpayPaymentLinkResponse {
   id: string;
@@ -28,6 +28,12 @@ export interface RazorpayPaymentLinkResponse {
     created_at: number;
   }> | null;
   created_at: number;
+}
+
+export interface RazorpayPaymentLinkListResponse {
+  entity: string;
+  count: number;
+  items: RazorpayPaymentLinkResponse[];
 }
 
 export async function createRecoveryPaymentLink(params: {
@@ -70,4 +76,30 @@ export async function cancelPaymentLink(paymentLinkId: string): Promise<Razorpay
   return await razorpayRequest<RazorpayPaymentLinkResponse>(`/payment_links/${paymentLinkId}/cancel`, {
     method: "POST",
   });
+}
+
+export async function fetchPaymentLinks(options?: {
+  referenceId?: string;
+  limit?: number;
+}): Promise<RazorpayPaymentLinkResponse[]> {
+  const query = new URLSearchParams();
+  if (options?.referenceId) query.set("reference_id", options.referenceId);
+  if (options?.limit) query.set("count", options.limit.toString());
+  const qs = query.toString();
+  const res = await razorpayRequest<RazorpayPaymentLinkListResponse>(
+    `/payment_links${qs ? `?${qs}` : ""}`
+  );
+  return res.items || [];
+}
+
+export async function findPaymentLinkByReferenceId(
+  referenceId: string
+): Promise<RazorpayPaymentLinkResponse | null> {
+  try {
+    const items = await fetchPaymentLinks({ referenceId, limit: 10 });
+    const match = items.find((link) => link.reference_id === referenceId);
+    return match || null;
+  } catch {
+    return null;
+  }
 }

@@ -7,6 +7,8 @@ import { supabase } from "@/lib/db/supabase";
 describe("Canonical Failed Payment Processor & Idempotency", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(runnerMod, "startRecoveryWorkflow").mockResolvedValue(undefined);
+    vi.spyOn(runnerMod, "ensureRecoveryWorkflowStarted").mockResolvedValue(undefined);
   });
 
   it("rejects payments that do not have status === 'failed'", async () => {
@@ -64,6 +66,9 @@ describe("Canonical Failed Payment Processor & Idempotency", () => {
   it("creates a recovery case and starts LangGraph workflow on verified failed payment", async () => {
     const workflowSpy = vi
       .spyOn(runnerMod, "startRecoveryWorkflow")
+      .mockResolvedValue(undefined);
+    const ensureSpy = vi
+      .spyOn(runnerMod, "ensureRecoveryWorkflowStarted")
       .mockResolvedValue(undefined);
 
     vi.spyOn(paymentsMod, "fetchRazorpayPayment").mockResolvedValue({

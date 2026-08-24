@@ -1,3 +1,5 @@
+﻿import crypto from "crypto";
+
 export type GateReasonCode =
   | "PASS_TEST_MODE"
   | "PASS_ORIGINAL_UNPAID"
@@ -40,6 +42,8 @@ export interface RecoveryGateInput {
     id: string;
     amountMinor: number;
     amountPaidMinor: number;
+    amountDueMinor: number;
+    currency?: string;
     status: string;
   };
   orderPayments?: Array<{
@@ -106,9 +110,28 @@ export function evaluateRecoveryGate(input: RecoveryGateInput): RecoveryGateOutp
     });
   }
 
-  // 2. Original Payment & Order Unpaid Check
+  // 2. Currency Relationship Check (Compare Order and Payment currencies when both present)
+  if (
+    input.canonicalOrder?.currency &&
+    input.canonicalPayment.currency &&
+    input.canonicalOrder.currency !== input.canonicalPayment.currency
+  ) {
+    authorized = false;
+    reasonCodes.push("DENY_CURRENCY_MISMATCH");
+    gateChecks.push({
+      id: "currency_match",
+      label: "Order & Payment currency match?",
+      answer: `MISMATCH (${input.canonicalOrder.currency} != ${input.canonicalPayment.currency})`,
+      passed: false,
+    });
+  }
+
+  // 3. Original Payment & Order Unpaid Check
   const isOriginalCaptured = input.canonicalPayment.captured || input.canonicalPayment.status === "captured";
-  const isOrderPaid = input.canonicalOrder && (input.canonicalOrder.status === "paid" || input.canonicalOrder.amountPaidMinor >= input.canonicalPayment.amountMinor);
+  const isOrderPaid =
+    input.canonicalOrder &&
+    (input.canonicalOrder.status === "paid" ||
+      input.canonicalOrder.amountPaidMinor >= input.canonicalPayment.amountMinor);
 
   if (isOriginalCaptured || isOrderPaid) {
     authorized = false;
@@ -129,7 +152,7 @@ export function evaluateRecoveryGate(input: RecoveryGateInput): RecoveryGateOutp
     });
   }
 
-  // 3. Captured Sibling Payments Check
+  // 4. Captured Sibling Payments Check
   const hasCapturedSibling = (input.orderPayments || []).some(
     (p) => p.id !== input.canonicalPayment.id && (p.captured || p.status === "captured")
   );
@@ -152,14 +175,17 @@ export function evaluateRecoveryGate(input: RecoveryGateInput): RecoveryGateOutp
     });
   }
 
-  // 4. Active Recovery Link Check
-  if (input.existingActiveAction && ["CREATING", "CREATED"].includes(input.existingActiveAction.status)) {
+  // 5. Active Recovery Link Check (CREATING, CREATED, and UNCERTAIN all block another recovery action)
+  if (
+    input.existingActiveAction &&
+    ["CREATING", "CREATED", "UNCERTAIN"].includes(input.existingActiveAction.status)
+  ) {
     authorized = false;
     reasonCodes.push("DENY_ACTIVE_RECOVERY_LINK");
     gateChecks.push({
       id: "active_link",
-      label: "Active recovery link exists?",
-      answer: "YES (DENIED)",
+      label: "Active/Uncertain recovery link exists?",
+      answer: `YES (${input.existingActiveAction.status})`,
       passed: false,
     });
   } else {
@@ -171,7 +197,7 @@ export function evaluateRecoveryGate(input: RecoveryGateInput): RecoveryGateOutp
     });
   }
 
-  // 5. Attempt Count Limit Check
+  // 6. Attempt Count Limit Check
   if (input.attemptCount >= input.policy.maxRecoveryAttempts) {
     authorized = false;
     reasonCodes.push("DENY_ATTEMPT_LIMIT_EXCEEDED");
@@ -192,7 +218,7 @@ export function evaluateRecoveryGate(input: RecoveryGateInput): RecoveryGateOutp
     });
   }
 
-  // 6. Strategy Check
+  // 7. Strategy Check (Clean enum: FRESH_CHECKOUT, MANUAL_REVIEW, STOP_ALREADY_PAID)
   if (input.proposedStrategy === "FRESH_CHECKOUT" && !input.policy.allowFreshCheckout) {
     authorized = false;
     reasonCodes.push("DENY_STRATEGY_NOT_ALLOWED");
@@ -202,7 +228,10 @@ export function evaluateRecoveryGate(input: RecoveryGateInput): RecoveryGateOutp
       answer: "NO",
       passed: false,
     });
-  } else if (input.proposedStrategy === "MANUAL_REVIEW" || input.proposedStrategy === "STOP_ALREADY_PAID") {
+  } else if (
+    input.proposedStrategy === "MANUAL_REVIEW" ||
+    input.proposedStrategy === "STOP_ALREADY_PAID"
+  ) {
     authorized = false;
     reasonCodes.push("DENY_STRATEGY_NOT_ALLOWED");
     gateChecks.push({
@@ -221,7 +250,7 @@ export function evaluateRecoveryGate(input: RecoveryGateInput): RecoveryGateOutp
     });
   }
 
-  // 7. Risk / Unknown Failure Class Check
+  // 8. Risk / Unknown Failure Class Check
   if (input.policy.blockRiskOrPolicyFailures && input.failureClass === "RISK_OR_POLICY") {
     authorized = false;
     reasonCodes.push("DENY_RISK_FAILURE");
@@ -249,7 +278,7 @@ export function evaluateRecoveryGate(input: RecoveryGateInput): RecoveryGateOutp
     });
   }
 
-  // 8. Confidence Threshold
+  // 9. Confidence Threshold
   if (input.confidence < input.policy.minDiagnosisConfidence) {
     authorized = false;
     reasonCodes.push("DENY_LOW_CONFIDENCE");
@@ -265,13 +294,17 @@ export function evaluateRecoveryGate(input: RecoveryGateInput): RecoveryGateOutp
       id: "confidence",
       label: "Diagnosis confidence met?",
       answer: "YES",
-      detail: `${Math.round(input.confidence * 100)}% ≥ ${Math.round(input.policy.minDiagnosisConfidence * 100)}%`,
+      detail: `${Math.round(input.confidence * 100)}% >= ${Math.round(input.policy.minDiagnosisConfidence * 100)}%`,
       passed: true,
     });
   }
 
-  // 9. Amount and Currency Bound Check
-  const exactAmountMinor = input.canonicalPayment.amountMinor;
+  // 10. Amount Determinism: derived strictly from canonical Razorpay state
+  const exactAmountMinor =
+    input.canonicalOrder && input.canonicalOrder.amountDueMinor > 0
+      ? input.canonicalOrder.amountDueMinor
+      : input.canonicalPayment.amountMinor;
+
   if (exactAmountMinor > input.policy.maxAutonomousAmountMinor) {
     authorized = false;
     reasonCodes.push("DENY_AMOUNT_LIMIT_EXCEEDED");
@@ -287,7 +320,7 @@ export function evaluateRecoveryGate(input: RecoveryGateInput): RecoveryGateOutp
       id: "amount_bound",
       label: "Amount inside policy?",
       answer: "YES",
-      detail: `₹${(exactAmountMinor / 100).toLocaleString("en-IN")} ≤ ₹${(input.policy.maxAutonomousAmountMinor / 100).toLocaleString("en-IN")}`,
+      detail: `₹${(exactAmountMinor / 100).toLocaleString("en-IN")} <= ₹${(input.policy.maxAutonomousAmountMinor / 100).toLocaleString("en-IN")}`,
       passed: true,
     });
   }
@@ -302,4 +335,38 @@ export function evaluateRecoveryGate(input: RecoveryGateInput): RecoveryGateOutp
     reasonCodes,
     gateChecks,
   };
+}
+
+/**
+ * Computes a deterministic SHA-256 state hash over safety-critical canonical provider data.
+ */
+export function computeCanonicalStateHash(params: {
+  paymentId: string;
+  paymentStatus: string;
+  paymentCaptured: boolean;
+  paymentAmountMinor: number;
+  paymentCurrency: string;
+  orderId?: string | null;
+  orderStatus?: string;
+  orderAmountPaidMinor?: number;
+  orderAmountDueMinor?: number;
+  siblingPayments?: Array<{ id: string; captured: boolean; amountMinor: number }>;
+  policyVersionId?: string;
+}): string {
+  const normalized = {
+    paymentId: params.paymentId,
+    paymentStatus: params.paymentStatus,
+    paymentCaptured: params.paymentCaptured,
+    paymentAmountMinor: params.paymentAmountMinor,
+    paymentCurrency: params.paymentCurrency,
+    orderId: params.orderId || null,
+    orderStatus: params.orderStatus || null,
+    orderAmountPaidMinor: params.orderAmountPaidMinor ?? 0,
+    orderAmountDueMinor: params.orderAmountDueMinor ?? 0,
+    siblingPayments: (params.siblingPayments || [])
+      .map((s) => ({ id: s.id, captured: s.captured, amountMinor: s.amountMinor }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+    policyVersionId: params.policyVersionId || null,
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
 }

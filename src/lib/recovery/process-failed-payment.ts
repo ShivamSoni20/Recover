@@ -1,6 +1,7 @@
 ﻿import { fetchRazorpayPayment, type RazorpayPaymentResponse } from "@/lib/razorpay/payments";
 import { supabase } from "@/lib/db/supabase";
-import { startRecoveryWorkflow } from "@/lib/graph/runner";
+import { startRecoveryWorkflow, ensureRecoveryWorkflowStarted } from "@/lib/graph/runner";
+import { requireDbMutation } from "@/lib/db/db-utils";
 
 export type FailureProvenance = "WEBHOOK" | "CANONICAL_API_RECONCILIATION";
 
@@ -30,7 +31,7 @@ export async function processCanonicalFailedPayment(
     throw new Error(`Razorpay payment '${paymentId}' not found.`);
   }
 
-  // 2. Security & Integrity Verifications
+  // 2. Security & Integrity Verifications: Provider Truth Only
   if (payment.status !== "failed") {
     throw new Error(
       `Cannot process recovery for payment '${payment.id}': canonical status is '${payment.status}', expected 'failed'.`
@@ -43,39 +44,47 @@ export async function processCanonicalFailedPayment(
     );
   }
 
+  const effectiveOrderId = payment.order_id || orderId;
+
   // 3. Check existing case by original_payment_id (Idempotency)
-  const { data: existingCase } = await supabase
+  const { data: existingPaymentCase } = await supabase
     .from("recovery_cases")
     .select("id, case_number, status")
     .eq("original_payment_id", payment.id)
     .maybeSingle();
 
-  if (existingCase) {
-    // Ensure session link is persisted if needed
-    const effectiveOrderId = payment.order_id || orderId;
+  if (existingPaymentCase) {
+    // Repair session link
     if (effectiveOrderId) {
-      await supabase
+      const updateRes = await supabase
         .from("test_payment_sessions")
         .update({
           status: "FAILED",
           original_payment_id: payment.id,
-          recovery_case_id: existingCase.id,
+          recovery_case_id: existingPaymentCase.id,
           updated_at: new Date().toISOString(),
         })
         .eq("order_id", effectiveOrderId);
+      requireDbMutation(updateRes, "update test_payment_sessions for existing payment case");
     }
+
+    // Ensure LangGraph workflow is started even on retry
+    await ensureRecoveryWorkflowStarted({
+      caseId: existingPaymentCase.id,
+      originalOrderId: effectiveOrderId || "",
+      originalPaymentId: payment.id,
+    });
 
     return {
       success: true,
-      caseId: existingCase.id,
-      caseNumber: existingCase.case_number,
+      caseId: existingPaymentCase.id,
+      caseNumber: existingPaymentCase.case_number,
       isNew: false,
       paymentId: payment.id,
     };
   }
 
   // Also check if existing case exists by original_order_id
-  const effectiveOrderId = payment.order_id || orderId;
   if (effectiveOrderId) {
     const { data: existingOrderCase } = await supabase
       .from("recovery_cases")
@@ -84,6 +93,23 @@ export async function processCanonicalFailedPayment(
       .maybeSingle();
 
     if (existingOrderCase) {
+      const updateRes = await supabase
+        .from("test_payment_sessions")
+        .update({
+          status: "FAILED",
+          original_payment_id: payment.id,
+          recovery_case_id: existingOrderCase.id,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("order_id", effectiveOrderId);
+      requireDbMutation(updateRes, "update test_payment_sessions for existing order case");
+
+      await ensureRecoveryWorkflowStarted({
+        caseId: existingOrderCase.id,
+        originalOrderId: effectiveOrderId,
+        originalPaymentId: payment.id,
+      });
+
       return {
         success: true,
         caseId: existingOrderCase.id,
@@ -123,10 +149,28 @@ export async function processCanonicalFailedPayment(
       const { data: racedCase } = await supabase
         .from("recovery_cases")
         .select("id, case_number")
-        .eq("original_payment_id", payment.id)
+        .or(`original_payment_id.eq.${payment.id},original_order_id.eq.${effectiveOrderId}`)
         .maybeSingle();
 
       if (racedCase) {
+        if (effectiveOrderId) {
+          await supabase
+            .from("test_payment_sessions")
+            .update({
+              status: "FAILED",
+              original_payment_id: payment.id,
+              recovery_case_id: racedCase.id,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("order_id", effectiveOrderId);
+        }
+
+        await ensureRecoveryWorkflowStarted({
+          caseId: racedCase.id,
+          originalOrderId: effectiveOrderId || "",
+          originalPaymentId: payment.id,
+        });
+
         return {
           success: true,
           caseId: racedCase.id,
@@ -141,7 +185,7 @@ export async function processCanonicalFailedPayment(
 
   // 5. Update session tracking
   if (effectiveOrderId) {
-    await supabase
+    const sessionUpdate = await supabase
       .from("test_payment_sessions")
       .update({
         status: "FAILED",
@@ -150,10 +194,11 @@ export async function processCanonicalFailedPayment(
         updated_at: new Date().toISOString(),
       })
       .eq("order_id", effectiveOrderId);
+    requireDbMutation(sessionUpdate, "link recovery case to test_payment_sessions");
   }
 
   // 6. Insert audit case event with exact provenance
-  await supabase.from("case_events").insert({
+  const eventInsert = await supabase.from("case_events").insert({
     case_id: caseId,
     event_type:
       provenance === "WEBHOOK"
@@ -175,6 +220,7 @@ export async function processCanonicalFailedPayment(
       errorStep: payment.error_step,
     },
   });
+  requireDbMutation(eventInsert, "insert initial case_event");
 
   // 7. Start durable LangGraph workflow exactly once
   await startRecoveryWorkflow({
