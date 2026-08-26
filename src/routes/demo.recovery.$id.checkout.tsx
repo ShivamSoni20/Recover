@@ -54,7 +54,9 @@ function RecoveryCheckout() {
     return (
       <main className="mx-auto flex w-full max-w-2xl flex-col items-center justify-center px-6 py-24 text-center">
         <Loader2 className="h-8 w-8 animate-spin text-brand" />
-        <p className="mt-4 text-sm font-semibold text-foreground">Loading recovery checkout details...</p>
+        <p className="mt-4 text-sm font-semibold text-foreground">
+          Loading recovery checkout details...
+        </p>
       </main>
     );
   }
@@ -64,7 +66,9 @@ function RecoveryCheckout() {
   if (!caseData || !action) {
     return (
       <main className="mx-auto w-full max-w-2xl px-6 py-20 text-center">
-        <h1 className="text-xl font-bold tracking-tight text-foreground">Recovery action not found</h1>
+        <h1 className="text-xl font-bold tracking-tight text-foreground">
+          Recovery action not found
+        </h1>
         <p className="mt-2 text-sm text-muted-foreground">
           Waiting for Recovery Payment Link creation in backend...
         </p>
@@ -107,7 +111,10 @@ function RecoveryCheckout() {
             <Field label="Action" value="Fresh checkout" />
             <Field label="Reference" value={action.reference_id} />
             <Field label="Payment Link ID" value={action.payment_link_id || "Creating..."} />
-            <Field label="Status" value={<PaymentStatusBadge status={action.status || "ACTIVE"} />} />
+            <Field
+              label="Status"
+              value={<PaymentStatusBadge status={action.status || "ACTIVE"} />}
+            />
           </div>
           <div className="mt-6 flex flex-wrap gap-3">
             {action.short_url ? (
@@ -115,7 +122,9 @@ function RecoveryCheckout() {
                 Open Hosted Recovery Checkout <ExternalLink className="h-4 w-4" />
               </DemoButton>
             ) : (
-              <p className="text-xs text-danger">Canonical Razorpay hosted checkout URL unavailable.</p>
+              <p className="text-xs text-danger">
+                Canonical Razorpay hosted checkout URL unavailable.
+              </p>
             )}
             <DemoButton
               variant="outline"
@@ -137,7 +146,9 @@ function RecoveryCheckout() {
                 key={s.label}
                 label={s.label}
                 state={s.state}
-                detail={s.state === "pending" ? "WAITING" : s.state === "active" ? "WAITING" : undefined}
+                detail={
+                  s.state === "pending" ? "WAITING" : s.state === "active" ? "WAITING" : undefined
+                }
               />
             ))}
           </ul>

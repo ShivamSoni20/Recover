@@ -148,10 +148,7 @@ export function updateCase(
     delete patch.state;
   }
   const events = event
-    ? [
-        ...existing.events,
-        typeof event === "string" ? { time: nowClock(), label: event } : event,
-      ]
+    ? [...existing.events, typeof event === "string" ? { time: nowClock(), label: event } : event]
     : existing.events;
   const next = { ...existing, ...patch, events };
   setStore({

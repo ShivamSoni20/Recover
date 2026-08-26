@@ -1,4 +1,4 @@
-﻿import "./lib/error-capture";
+import "./lib/error-capture";
 
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
@@ -77,82 +77,76 @@ export default {
           providerEventId = `evt_${nodeCrypto.createHash("sha256").update(`${eventType}_${rawBody}`).digest("hex").slice(0, 24)}`;
         }
 
-        // 1. Check existing webhook event record for idempotency & retry lifecycle
-        const { data: existingEvent } = await supabase
-          .from("webhook_events")
-          .select("id, processing_status, processed_at")
-          .eq("provider_event_id", providerEventId)
-          .maybeSingle();
+        // 1. Atomic claim of event for processing (Allowed states: RECEIVED, FAILED_RETRYABLE)
+        let claimed = false;
+        let currentStatus = "RECEIVED";
 
-        if (existingEvent) {
-          if (existingEvent.processed_at != null || existingEvent.processing_status === "PROCESSED") {
+        try {
+          const { data: claimData, error: rpcError } = await supabase.rpc("claim_webhook_event", {
+            p_provider_event_id: providerEventId,
+            p_event_type: eventType,
+            p_raw_payload: payload,
+          });
+
+          if (!rpcError && Array.isArray(claimData) && claimData.length > 0) {
+            claimed = claimData[0].claimed;
+            currentStatus = claimData[0].current_status;
+          } else {
+            // PostgREST fallback if RPC is not populated
+            await supabase.from("webhook_events").upsert(
+              {
+                provider_event_id: providerEventId,
+                event_type: eventType,
+                signature_valid: true,
+                raw_payload: payload,
+                processing_status: "RECEIVED",
+              },
+              { onConflict: "provider_event_id", ignoreDuplicates: true },
+            );
+
+            const { data: claimedRow } = await supabase
+              .from("webhook_events")
+              .update({
+                processing_status: "PROCESSING",
+                processing_started_at: new Date().toISOString(),
+              })
+              .eq("provider_event_id", providerEventId)
+              .in("processing_status", ["RECEIVED", "FAILED_RETRYABLE"])
+              .select("id, processing_status")
+              .maybeSingle();
+
+            if (claimedRow) {
+              claimed = true;
+              currentStatus = "PROCESSING";
+            } else {
+              const { data: existingRow } = await supabase
+                .from("webhook_events")
+                .select("processing_status")
+                .eq("provider_event_id", providerEventId)
+                .maybeSingle();
+              claimed = false;
+              currentStatus = existingRow?.processing_status || "PROCESSING";
+            }
+          }
+        } catch {
+          claimed = false;
+        }
+
+        if (!claimed) {
+          if (currentStatus === "PROCESSED") {
             return new Response(JSON.stringify({ status: "already_processed", eventType }), {
               status: 200,
               headers: { "content-type": "application/json" },
             });
           }
-          if (existingEvent.processing_status === "PROCESSING") {
-            // Concurrent delivery in-flight
-            return new Response(JSON.stringify({ status: "concurrent_processing" }), {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            });
-          }
-        } else {
-          // Insert initial inbox entry
-          const { error: insertError } = await supabase.from("webhook_events").insert({
-            provider_event_id: providerEventId,
-            event_type: eventType,
-            signature_valid: true,
-            raw_payload: payload,
-            processing_status: "RECEIVED",
-          });
-
-          if (insertError) {
-            // If duplicate race on provider_event_id, inspect status
-            if (insertError.code === "23505" || insertError.message?.includes("duplicate")) {
-              const { data: racedEvent } = await supabase
-                .from("webhook_events")
-                .select("processing_status, processed_at")
-                .eq("provider_event_id", providerEventId)
-                .maybeSingle();
-
-              if (racedEvent && (racedEvent.processed_at != null || racedEvent.processing_status === "PROCESSED")) {
-                return new Response(JSON.stringify({ status: "already_processed" }), {
-                  status: 200,
-                  headers: { "content-type": "application/json" },
-                });
-              }
-            } else {
-              return new Response(JSON.stringify({ error: "Database error persisting webhook" }), {
-                status: 500,
-                headers: { "content-type": "application/json" },
-              });
-            }
-          }
-        }
-
-        // 2. Atomic claim of event for processing
-        const { data: claimedEvent } = await supabase
-          .from("webhook_events")
-          .update({
-            processing_status: "PROCESSING",
-            processing_started_at: new Date().toISOString(),
-          })
-          .eq("provider_event_id", providerEventId)
-          .neq("processing_status", "PROCESSED")
-          .select("id")
-          .maybeSingle();
-
-        if (!claimedEvent) {
-          return new Response(JSON.stringify({ status: "already_claimed_or_processed" }), {
+          return new Response(JSON.stringify({ status: "concurrent_processing", eventType }), {
             status: 200,
             headers: { "content-type": "application/json" },
           });
         }
 
         try {
-          // 3. Process according to event type
+          // 2. Process according to event type
           if (eventType === "payment.failed") {
             const paymentEntity = payload.payload?.payment?.entity;
             if (paymentEntity?.id) {
@@ -206,7 +200,9 @@ export default {
 
               if (
                 originalCase &&
-                !["RECOVERED_VERIFIED", "STOPPED_ALREADY_PAID"].includes(originalCase.terminal_status || "")
+                !["RECOVERED_VERIFIED", "STOPPED_ALREADY_PAID"].includes(
+                  originalCase.terminal_status || "",
+                )
               ) {
                 await resumeWorkflowWithPaymentEvent(originalCase.id, {
                   kind: "ORIGINAL_PAYMENT_CAPTURED",
@@ -246,7 +242,7 @@ export default {
             }
           }
 
-          // 4. Mark PROCESSED on successful completion
+          // 3. Mark PROCESSED on successful completion
           await supabase
             .from("webhook_events")
             .update({

@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { verifyRazorpayWebhookSignature } from "@/lib/razorpay/webhooks";
 import { evaluateRecoveryGate, computeCanonicalStateHash } from "@/lib/domain/recovery-gate";
@@ -24,7 +25,6 @@ describe("Specification Matrix A through R", () => {
       process.env.RAZORPAY_WEBHOOK_SECRET = secret;
 
       const body = JSON.stringify({ event: "payment.failed" });
-      const crypto = require("crypto");
       const validSignature = crypto.createHmac("sha256", secret).update(body).digest("hex");
 
       expect(verifyRazorpayWebhookSignature(body, validSignature)).toBe(true);
@@ -61,7 +61,7 @@ describe("Specification Matrix A through R", () => {
         currency: "INR",
         status: "paid",
         attempts: 1,
-      });
+      } as any);
 
       vi.spyOn(paymentsMod, "fetchPaymentsForOrder").mockResolvedValue([]);
 
@@ -262,7 +262,9 @@ describe("Specification Matrix A through R", () => {
       const result = await verifyRecoveryNode(state);
       expect(result.terminalStatus).toBe("FAILED_SAFE");
       expect(result.verification?.status).toBe("FAILED");
-      const amountCheck = result.verification?.checks.find((c: any) => c.key === "EXACT_AMOUNT_MATCH");
+      const amountCheck = result.verification?.checks.find(
+        (c: any) => c.key === "EXACT_AMOUNT_MATCH",
+      );
       expect(amountCheck?.passed).toBe(false);
     });
 

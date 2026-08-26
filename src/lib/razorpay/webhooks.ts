@@ -8,7 +8,7 @@ import { getRazorpayConfig } from "./client";
 export function verifyRazorpayWebhookSignature(
   rawBody: string | Buffer,
   signature: string | null | undefined,
-  secretOverride?: string
+  secretOverride?: string,
 ): boolean {
   if (!signature) return false;
   const secret = secretOverride || getRazorpayConfig().webhookSecret;
@@ -16,15 +16,12 @@ export function verifyRazorpayWebhookSignature(
     throw new Error("[Razorpay Webhooks] RAZORPAY_WEBHOOK_SECRET is missing.");
   }
 
-  const expectedSignature = crypto
-    .createHmac("sha256", secret)
-    .update(rawBody)
-    .digest("hex");
+  const expectedSignature = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
 
   try {
     return crypto.timingSafeEqual(
       Buffer.from(signature, "utf-8"),
-      Buffer.from(expectedSignature, "utf-8")
+      Buffer.from(expectedSignature, "utf-8"),
     );
   } catch {
     return false;

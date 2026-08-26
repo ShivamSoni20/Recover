@@ -44,7 +44,9 @@ function DemoHistory() {
     failureDetail: c.failure_detail,
     method: c.method || "UPI",
     failedAt: c.failed_at ? new Date(c.failed_at).toLocaleTimeString() : null,
-    confidence: c.recovery_diagnoses?.[0]?.confidence ? Math.round(Number(c.recovery_diagnoses[0].confidence) * 100) : 0,
+    confidence: c.recovery_diagnoses?.[0]?.confidence
+      ? Math.round(Number(c.recovery_diagnoses[0].confidence) * 100)
+      : 0,
     failureClass: c.recovery_diagnoses?.[0]?.failure_class || "UNKNOWN",
     diagnosis: c.recovery_diagnoses?.[0]?.summary || "",
     recoveryStrategy: c.action_authorizations?.[0]?.strategy || "FRESH_CHECKOUT",
@@ -78,7 +80,9 @@ function DemoHistory() {
       <div className="mt-8 space-y-3">
         {adaptedCases.length === 0 ? (
           <Panel className="px-6 py-10 text-center">
-            <p className="text-sm font-semibold text-foreground">No recovery cases in database yet.</p>
+            <p className="text-sm font-semibold text-foreground">
+              No recovery cases in database yet.
+            </p>
             <DemoButton className="mt-5" onClick={() => navigate({ to: "/demo/create" })}>
               Create Test Payment
             </DemoButton>

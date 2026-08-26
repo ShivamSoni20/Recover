@@ -2,7 +2,12 @@ import { useEffect, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ArrowRight, Loader2, ShieldAlert } from "lucide-react";
 import { DemoButton } from "@/components/demo/ui";
-import { ProofStrip, RecoveryTimelineDrawer, VerificationReceipt, type VerificationReceiptView } from "@/components/demo/proof";
+import {
+  ProofStrip,
+  RecoveryTimelineDrawer,
+  VerificationReceipt,
+  type VerificationReceiptView,
+} from "@/components/demo/proof";
 import { getCaseFn } from "@/lib/api/server-fns";
 import { formatINRMinor } from "@/lib/domain/money";
 
@@ -47,7 +52,9 @@ function RecoveryResult() {
     return (
       <main className="mx-auto flex w-full max-w-2xl flex-col items-center justify-center px-6 py-24 text-center">
         <Loader2 className="h-8 w-8 animate-spin text-brand" />
-        <p className="mt-4 text-sm font-semibold text-foreground">Loading verified receipt from database...</p>
+        <p className="mt-4 text-sm font-semibold text-foreground">
+          Loading verified receipt from database...
+        </p>
       </main>
     );
   }
@@ -73,7 +80,10 @@ function RecoveryResult() {
         <p className="mt-2 text-sm text-muted-foreground">
           Canonical provider verification receipt could not be validated.
         </p>
-        <DemoButton className="mt-6" onClick={() => navigate({ to: "/demo/payment/$id", params: { id } })}>
+        <DemoButton
+          className="mt-6"
+          onClick={() => navigate({ to: "/demo/payment/$id", params: { id } })}
+        >
           Back to case details
         </DemoButton>
       </main>

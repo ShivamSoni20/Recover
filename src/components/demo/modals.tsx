@@ -75,7 +75,9 @@ export function RecoveryCheckoutModal({
             {isInitial ? "Recover Demo Payment" : "Recover Payment"}
           </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {isInitial ? "Merchant · Demo Merchant" : "This checkout represents the fresh recovery attempt."}
+            {isInitial
+              ? "Merchant · Demo Merchant"
+              : "This checkout represents the fresh recovery attempt."}
           </p>
         </div>
 

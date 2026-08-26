@@ -127,7 +127,8 @@ export function evaluateRecoveryGate(input: RecoveryGateInput): RecoveryGateOutp
   }
 
   // 3. Original Payment & Order Unpaid Check
-  const isOriginalCaptured = input.canonicalPayment.captured || input.canonicalPayment.status === "captured";
+  const isOriginalCaptured =
+    input.canonicalPayment.captured || input.canonicalPayment.status === "captured";
   const isOrderPaid =
     input.canonicalOrder &&
     (input.canonicalOrder.status === "paid" ||
@@ -154,7 +155,7 @@ export function evaluateRecoveryGate(input: RecoveryGateInput): RecoveryGateOutp
 
   // 4. Captured Sibling Payments Check
   const hasCapturedSibling = (input.orderPayments || []).some(
-    (p) => p.id !== input.canonicalPayment.id && (p.captured || p.status === "captured")
+    (p) => p.id !== input.canonicalPayment.id && (p.captured || p.status === "captured"),
   );
   if (hasCapturedSibling) {
     authorized = false;

@@ -21,7 +21,7 @@ export function getServerSupabase(): SupabaseClient {
       });
     }
     throw new Error(
-      "[Supabase Security Gate] Fail-closed: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are mandatory for trusted backend database operations."
+      "[Supabase Security Gate] Fail-closed: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are mandatory for trusted backend database operations.",
     );
   }
 

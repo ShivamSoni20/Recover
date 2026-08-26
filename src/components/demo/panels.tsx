@@ -59,13 +59,14 @@ export function AIDiagnosisCard({
   demoCase: DemoCase;
   evidenceFields?: string[];
 }) {
-  const displayEvidence = evidenceFields.length > 0
-    ? evidenceFields
-    : [
-        `Payment method: ${demoCase.method}`,
-        `Error reason: ${demoCase.failureReason}`,
-        `Error detail: ${demoCase.failureDetail}`,
-      ];
+  const displayEvidence =
+    evidenceFields.length > 0
+      ? evidenceFields
+      : [
+          `Payment method: ${demoCase.method}`,
+          `Error reason: ${demoCase.failureReason}`,
+          `Error detail: ${demoCase.failureDetail}`,
+        ];
 
   return (
     <section className="rounded-2xl border border-brand-soft bg-brand-softer p-5">

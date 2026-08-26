@@ -10,7 +10,9 @@ let pool: pg.Pool | null = null;
 export function getPgPool(): pg.Pool {
   if (!pool) {
     if (!connectionString) {
-      throw new Error("DATABASE_URL environment variable is required for PostgreSQL connection pool.");
+      throw new Error(
+        "DATABASE_URL environment variable is required for PostgreSQL connection pool.",
+      );
     }
     pool = new pg.Pool({
       connectionString,

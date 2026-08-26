@@ -66,7 +66,9 @@ function VerifyRecovery() {
   if (!caseData) {
     return (
       <main className="mx-auto w-full max-w-2xl px-6 py-20 text-center">
-        <h1 className="text-xl font-bold tracking-tight text-foreground">Recovery case not found</h1>
+        <h1 className="text-xl font-bold tracking-tight text-foreground">
+          Recovery case not found
+        </h1>
         <DemoButton className="mt-6" onClick={() => navigate({ to: "/demo" })}>
           Back to overview
         </DemoButton>
@@ -78,19 +80,40 @@ function VerifyRecovery() {
   const checksPassed: Array<{ key: string; expected: any; observed: any; passed: boolean }> =
     receipt?.checks_passed || [];
 
-  const displayChecks = checksPassed.length > 0
-    ? checksPassed.map((c) => ({
-        id: c.key,
-        label: c.key.replace(/_/g, " "),
-        result: String(c.observed),
-      }))
-    : [
-        { id: "event", label: "Payment event received", result: caseData.status === "VERIFYING" ? "Received" : "Waiting" },
-        { id: "canonical", label: "Fetching canonical payment state", result: receipt ? "Fetched" : "Pending" },
-        { id: "amount", label: "Checking exact amount", result: formatINRMinor(caseData.amount_minor) },
-        { id: "link", label: "Checking Payment Link status", result: receipt ? "Verified" : "Pending" },
-        { id: "receipt", label: "Generating verification receipt", result: receipt ? "Generated" : "Pending" },
-      ];
+  const displayChecks =
+    checksPassed.length > 0
+      ? checksPassed.map((c) => ({
+          id: c.key,
+          label: c.key.replace(/_/g, " "),
+          result: String(c.observed),
+        }))
+      : [
+          {
+            id: "event",
+            label: "Payment event received",
+            result: caseData.status === "VERIFYING" ? "Received" : "Waiting",
+          },
+          {
+            id: "canonical",
+            label: "Fetching canonical payment state",
+            result: receipt ? "Fetched" : "Pending",
+          },
+          {
+            id: "amount",
+            label: "Checking exact amount",
+            result: formatINRMinor(caseData.amount_minor),
+          },
+          {
+            id: "link",
+            label: "Checking Payment Link status",
+            result: receipt ? "Verified" : "Pending",
+          },
+          {
+            id: "receipt",
+            label: "Generating verification receipt",
+            result: receipt ? "Generated" : "Pending",
+          },
+        ];
 
   const done = Boolean(receipt) && caseData.terminal_status === "RECOVERED_VERIFIED";
 
@@ -105,7 +128,9 @@ function VerifyRecovery() {
           {done ? "Payment verified" : "Payment submitted"}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          {done ? "Canonical provider checks passed." : "Waiting for signed webhook and canonical provider confirmation..."}
+          {done
+            ? "Canonical provider checks passed."
+            : "Waiting for signed webhook and canonical provider confirmation..."}
         </p>
       </div>
 

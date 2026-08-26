@@ -45,7 +45,9 @@ function PaymentCase() {
 
   const [caseData, setCaseData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [approvalPhase, setApprovalPhase] = useState<"idle" | "recheck" | "unpaid" | "creating">("idle");
+  const [approvalPhase, setApprovalPhase] = useState<"idle" | "recheck" | "unpaid" | "creating">(
+    "idle",
+  );
 
   const loadCase = async () => {
     try {
@@ -69,7 +71,9 @@ function PaymentCase() {
     return (
       <main className="mx-auto flex w-full max-w-2xl flex-col items-center justify-center px-6 py-24 text-center">
         <Loader2 className="h-8 w-8 animate-spin text-brand" />
-        <p className="mt-4 text-sm font-semibold text-foreground">Loading canonical case from database...</p>
+        <p className="mt-4 text-sm font-semibold text-foreground">
+          Loading canonical case from database...
+        </p>
       </main>
     );
   }
@@ -77,7 +81,9 @@ function PaymentCase() {
   if (!caseData) {
     return (
       <main className="mx-auto w-full max-w-2xl px-6 py-20 text-center">
-        <h1 className="text-xl font-bold tracking-tight text-foreground">Recovery case not found</h1>
+        <h1 className="text-xl font-bold tracking-tight text-foreground">
+          Recovery case not found
+        </h1>
         <p className="mt-2 text-sm text-muted-foreground">
           No case matches <code className="font-mono text-xs">{id}</code> in Supabase.
         </p>
@@ -243,7 +249,11 @@ function PaymentCase() {
             />
           ) : null}
           {gateStarted ? (
-            <RecoveryGate checks={gateChecks} revealed={gateChecks.length} authorized={authorized} />
+            <RecoveryGate
+              checks={gateChecks}
+              revealed={gateChecks.length}
+              authorized={authorized}
+            />
           ) : null}
 
           {authorized ? (
@@ -264,7 +274,8 @@ function PaymentCase() {
               {approvalPhase === "idle" ? (
                 <div className="mt-4 flex flex-wrap gap-3">
                   <DemoButton onClick={handleRecover}>
-                    Recover {formatINRMinor(caseData.amount_minor)} <ArrowRight className="h-4 w-4" />
+                    Recover {formatINRMinor(caseData.amount_minor)}{" "}
+                    <ArrowRight className="h-4 w-4" />
                   </DemoButton>
                   <DemoButton variant="outline" onClick={handleEscalate}>
                     Escalate instead
@@ -289,10 +300,7 @@ function PaymentCase() {
           ) : null}
         </div>
 
-        <RecoveryProofPanel
-          status={authorized ? "AUTHORIZED" : "PENDING"}
-          steps={proofSteps}
-        />
+        <RecoveryProofPanel status={authorized ? "AUTHORIZED" : "PENDING"} steps={proofSteps} />
       </div>
     </main>
   );

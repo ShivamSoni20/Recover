@@ -9,7 +9,10 @@ export interface RetrievedChunk {
   score: number;
 }
 
-export async function retrieveRecoveryKnowledge(query: string, limit = 3): Promise<RetrievedChunk[]> {
+export async function retrieveRecoveryKnowledge(
+  query: string,
+  limit = 3,
+): Promise<RetrievedChunk[]> {
   try {
     const embeddings = new OpenRouterEmbeddings();
     const queryEmbedding = await embeddings.embedQuery(query);
@@ -31,14 +34,16 @@ export async function retrieveRecoveryKnowledge(query: string, limit = 3): Promi
       return [];
     }
 
-    return (data as Array<{
-      id: string;
-      document_id: string;
-      source: string;
-      title: string;
-      content: string;
-      similarity: number;
-    }>).map((row) => ({
+    return (
+      data as Array<{
+        id: string;
+        document_id: string;
+        source: string;
+        title: string;
+        content: string;
+        similarity: number;
+      }>
+    ).map((row) => ({
       chunkId: row.id,
       source: row.source,
       title: row.title,

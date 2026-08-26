@@ -151,7 +151,7 @@ describe("LangGraph Recover Workflow - Complete Closed Loop", () => {
         originalOrderId: "order_test_stub_1",
         originalPaymentId: "pay_test_stub_1",
       },
-      config
+      config,
     );
 
     // Should have diagnosed and evaluated gate
@@ -175,13 +175,13 @@ describe("LangGraph Recover Workflow - Complete Closed Loop", () => {
         originalOrderId: "order_test_stub_1",
         originalPaymentId: "pay_test_stub_1",
       },
-      config
+      config,
     );
 
     // Resume with operator approval
     const resumedResult = await graph.invoke(
       new Command({ resume: { decision: "APPROVE_RECOVERY" } }),
-      config
+      config,
     );
 
     expect(resumedResult.approval?.status).toBe("APPROVED");
@@ -204,14 +204,11 @@ describe("LangGraph Recover Workflow - Complete Closed Loop", () => {
         originalOrderId: "order_test_stub_1",
         originalPaymentId: "pay_test_stub_1",
       },
-      config
+      config,
     );
 
     // Step 2: Resume approval
-    await graph.invoke(
-      new Command({ resume: { decision: "APPROVE_RECOVERY" } }),
-      config
-    );
+    await graph.invoke(new Command({ resume: { decision: "APPROVE_RECOVERY" } }), config);
 
     // Step 3: Resume recovery payment
     const finalResult = await graph.invoke(
@@ -223,7 +220,7 @@ describe("LangGraph Recover Workflow - Complete Closed Loop", () => {
           paymentLinkId: "plink_test_stub_1",
         },
       }),
-      config
+      config,
     );
 
     expect(finalResult.terminalStatus).toBe("RECOVERED_VERIFIED");

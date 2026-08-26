@@ -78,7 +78,11 @@ describe("reconcileTestPaymentSession", () => {
           select: vi.fn().mockReturnValue({
             eq: vi.fn().mockReturnValue({
               maybeSingle: vi.fn().mockResolvedValue({
-                data: { session_id: "sess_2", order_id: "order_captured_1", recovery_case_id: null },
+                data: {
+                  session_id: "sess_2",
+                  order_id: "order_captured_1",
+                  recovery_case_id: null,
+                },
                 error: null,
               }),
             }),
@@ -173,15 +177,13 @@ describe("reconcileTestPaymentSession", () => {
       },
     ]);
 
-    const processSpy = vi
-      .spyOn(processMod, "processCanonicalFailedPayment")
-      .mockResolvedValue({
-        success: true,
-        caseId: "case-1234-uuid",
-        caseNumber: "RCV-12345",
-        isNew: true,
-        paymentId: "pay_fail_777",
-      });
+    const processSpy = vi.spyOn(processMod, "processCanonicalFailedPayment").mockResolvedValue({
+      success: true,
+      caseId: "case-1234-uuid",
+      caseNumber: "RCV-12345",
+      isNew: true,
+      paymentId: "pay_fail_777",
+    });
 
     const res = await reconcileTestPaymentSession({
       sessionId: "sess_3",
@@ -195,7 +197,7 @@ describe("reconcileTestPaymentSession", () => {
         orderId: "order_failed_1",
         paymentId: "pay_fail_777",
         provenance: "CANONICAL_API_RECONCILIATION",
-      })
+      }),
     );
   });
 });

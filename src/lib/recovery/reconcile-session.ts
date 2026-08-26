@@ -39,7 +39,7 @@ export type ReconcileSessionResult =
     };
 
 export async function reconcileTestPaymentSession(
-  params: ReconcileSessionParams
+  params: ReconcileSessionParams,
 ): Promise<ReconcileSessionResult> {
   const { sessionId, candidatePaymentId } = params;
 

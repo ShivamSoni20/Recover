@@ -49,7 +49,9 @@ export async function ensureRecoveryWorkflowStarted(params: {
   // Check if thread already has a durable checkpoint
   const existingTuple = await checkpointer.getTuple(config);
   if (existingTuple && existingTuple.checkpoint) {
-    console.log(`[LangGraph Runner] Workflow already has durable checkpoint for thread ${params.caseId}. Skipping initial invoke.`);
+    console.log(
+      `[LangGraph Runner] Workflow already has durable checkpoint for thread ${params.caseId}. Skipping initial invoke.`,
+    );
     return;
   }
 
@@ -58,7 +60,7 @@ export async function ensureRecoveryWorkflowStarted(params: {
 
 export async function resumeWorkflowWithDecision(
   caseId: string,
-  decision: "APPROVE_RECOVERY" | "ESCALATE" | "REJECT"
+  decision: "APPROVE_RECOVERY" | "ESCALATE" | "REJECT",
 ): Promise<void> {
   const checkpointer = await getCheckpointer();
   const graph = createRecoverGraph().compile({ checkpointer });
@@ -69,7 +71,7 @@ export async function resumeWorkflowWithDecision(
 
 export async function resumeWorkflowWithPaymentEvent(
   caseId: string,
-  event: RecoveryResumeEvent
+  event: RecoveryResumeEvent,
 ): Promise<void> {
   const checkpointer = await getCheckpointer();
   const graph = createRecoverGraph().compile({ checkpointer });

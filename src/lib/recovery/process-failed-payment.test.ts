@@ -33,7 +33,7 @@ describe("Canonical Failed Payment Processor & Idempotency", () => {
         paymentId: "pay_captured_123",
         orderId: "order_123",
         provenance: "CANONICAL_API_RECONCILIATION",
-      })
+      }),
     ).rejects.toThrow("expected 'failed'");
   });
 
@@ -59,14 +59,12 @@ describe("Canonical Failed Payment Processor & Idempotency", () => {
         paymentId: "pay_failed_123",
         orderId: "order_wrong_456",
         provenance: "CANONICAL_API_RECONCILIATION",
-      })
+      }),
     ).rejects.toThrow("order mismatch");
   });
 
   it("creates a recovery case and starts LangGraph workflow on verified failed payment", async () => {
-    const workflowSpy = vi
-      .spyOn(runnerMod, "startRecoveryWorkflow")
-      .mockResolvedValue(undefined);
+    const workflowSpy = vi.spyOn(runnerMod, "startRecoveryWorkflow").mockResolvedValue(undefined);
     const ensureSpy = vi
       .spyOn(runnerMod, "ensureRecoveryWorkflowStarted")
       .mockResolvedValue(undefined);
@@ -127,9 +125,7 @@ describe("Canonical Failed Payment Processor & Idempotency", () => {
   });
 
   it("is strictly idempotent: returns existing case and avoids starting duplicate workflow when webhook follows reconciliation", async () => {
-    const workflowSpy = vi
-      .spyOn(runnerMod, "startRecoveryWorkflow")
-      .mockResolvedValue(undefined);
+    const workflowSpy = vi.spyOn(runnerMod, "startRecoveryWorkflow").mockResolvedValue(undefined);
 
     vi.spyOn(paymentsMod, "fetchRazorpayPayment").mockResolvedValue({
       id: "pay_failed_dup_001",

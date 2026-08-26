@@ -61,6 +61,12 @@ describe("Razorpay Webhook Verification & HMAC SHA-256 Tests", () => {
 
   it("FAIL: rejects malformed, partial, or non-hex signatures without throwing timing errors", () => {
     expect(verifyRazorpayWebhookSignature(payload, "short_invalid_sig", secret)).toBe(false);
-    expect(verifyRazorpayWebhookSignature(payload, "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", secret)).toBe(false);
+    expect(
+      verifyRazorpayWebhookSignature(
+        payload,
+        "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        secret,
+      ),
+    ).toBe(false);
   });
 });

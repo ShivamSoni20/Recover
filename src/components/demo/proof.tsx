@@ -120,14 +120,17 @@ export function VerificationReceipt({
                 <span className="font-medium text-foreground">{c.key.replace(/_/g, " ")}</span>
               </div>
               <div className="font-mono text-[11px] text-muted-foreground">
-                Observed: <span className="font-semibold text-foreground">{String(c.observed)}</span>
+                Observed:{" "}
+                <span className="font-semibold text-foreground">{String(c.observed)}</span>
               </div>
             </li>
           ))}
         </ul>
       </div>
       <div className="flex items-center justify-between border-t border-border px-6 py-4">
-        <span className="text-[11px] text-muted-foreground">Audit receipt · {receipt.receiptId || "—"}</span>
+        <span className="text-[11px] text-muted-foreground">
+          Audit receipt · {receipt.receiptId || "—"}
+        </span>
         <span
           className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-bold tracking-wide uppercase ${
             receipt.status === "VERIFIED"

@@ -24,7 +24,7 @@ export async function getActiveRecoveryPolicy(): Promise<RecoveryPolicy> {
 
   if (error || !data) {
     throw new Error(
-      `[Recovery Policy] Active policy version not found in Supabase: ${error?.message || "No active policy row"}`
+      `[Recovery Policy] Active policy version not found in Supabase: ${error?.message || "No active policy row"}`,
     );
   }
 

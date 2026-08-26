@@ -13,10 +13,13 @@ export function rupeesToMinor(rupees: number): number {
 
 export function formatINRMinor(minor: number): string {
   const rupees = minorToRupees(minor);
-  return "₹" + rupees.toLocaleString("en-IN", {
-    minimumFractionDigits: minor % 100 === 0 ? 0 : 2,
-    maximumFractionDigits: 2,
-  });
+  return (
+    "₹" +
+    rupees.toLocaleString("en-IN", {
+      minimumFractionDigits: minor % 100 === 0 ? 0 : 2,
+      maximumFractionDigits: 2,
+    })
+  );
 }
 
 export function isValidMinorAmount(minor: number, min = 10000, max = 1000000): boolean {

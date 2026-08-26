@@ -68,14 +68,21 @@ export async function createRecoveryPaymentLink(params: {
   });
 }
 
-export async function fetchPaymentLink(paymentLinkId: string): Promise<RazorpayPaymentLinkResponse> {
+export async function fetchPaymentLink(
+  paymentLinkId: string,
+): Promise<RazorpayPaymentLinkResponse> {
   return await razorpayRequest<RazorpayPaymentLinkResponse>(`/payment_links/${paymentLinkId}`);
 }
 
-export async function cancelPaymentLink(paymentLinkId: string): Promise<RazorpayPaymentLinkResponse> {
-  return await razorpayRequest<RazorpayPaymentLinkResponse>(`/payment_links/${paymentLinkId}/cancel`, {
-    method: "POST",
-  });
+export async function cancelPaymentLink(
+  paymentLinkId: string,
+): Promise<RazorpayPaymentLinkResponse> {
+  return await razorpayRequest<RazorpayPaymentLinkResponse>(
+    `/payment_links/${paymentLinkId}/cancel`,
+    {
+      method: "POST",
+    },
+  );
 }
 
 export async function fetchPaymentLinks(options?: {
@@ -87,13 +94,13 @@ export async function fetchPaymentLinks(options?: {
   if (options?.limit) query.set("count", options.limit.toString());
   const qs = query.toString();
   const res = await razorpayRequest<RazorpayPaymentLinkListResponse>(
-    `/payment_links${qs ? `?${qs}` : ""}`
+    `/payment_links${qs ? `?${qs}` : ""}`,
   );
   return res.items || [];
 }
 
 export async function findPaymentLinkByReferenceId(
-  referenceId: string
+  referenceId: string,
 ): Promise<RazorpayPaymentLinkResponse | null> {
   try {
     const items = await fetchPaymentLinks({ referenceId, limit: 10 });

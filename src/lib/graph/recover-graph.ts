@@ -19,7 +19,7 @@ import { requireDbMutation, requireDbSuccess } from "../db/db-utils";
 async function updateCaseStatus(
   caseId: string,
   status: string,
-  terminalStatus?: string
+  terminalStatus?: string,
 ): Promise<void> {
   const updatePayload: Record<string, unknown> = {
     status,
@@ -35,11 +35,14 @@ async function updateCaseStatus(
 // ----------------------------------------------------------------------------
 // 1. canonicalize_original_state
 // ----------------------------------------------------------------------------
-export async function canonicalizeOriginalState(state: RecoverState): Promise<Partial<RecoverState>> {
+export async function canonicalizeOriginalState(
+  state: RecoverState,
+): Promise<Partial<RecoverState>> {
   await updateCaseStatus(state.caseId, "CANONICALIZING");
   const payment = await fetchRazorpayPayment(state.originalPaymentId);
   let order = undefined;
-  let orderPayments: Array<{ id: string; status: string; captured: boolean; amountMinor: number }> = [];
+  let orderPayments: Array<{ id: string; status: string; captured: boolean; amountMinor: number }> =
+    [];
 
   if (payment.order_id) {
     const rawOrder = await fetchRazorpayOrder(payment.order_id);
@@ -99,7 +102,7 @@ export async function checkAlreadyPaid(state: RecoverState): Promise<Partial<Rec
     state.canonicalOrder &&
     state.canonicalOrder.amountPaidMinor >= (state.canonicalPayment?.amountMinor || 0);
   const hasSiblingCaptured = state.orderPayments.some(
-    (p) => p.id !== state.originalPaymentId && p.captured
+    (p) => p.id !== state.originalPaymentId && p.captured,
   );
 
   if (isCaptured || isOrderPaid || hasSiblingCaptured) {
@@ -122,7 +125,8 @@ export async function checkAlreadyPaid(state: RecoverState): Promise<Partial<Rec
 // ----------------------------------------------------------------------------
 export async function retrieveKnowledgeNode(state: RecoverState): Promise<Partial<RecoverState>> {
   await updateCaseStatus(state.caseId, "RETRIEVING_KNOWLEDGE");
-  const query = `${state.canonicalPayment?.errorCode || ""} ${state.canonicalPayment?.errorDescription || ""} ${state.canonicalPayment?.method || ""}`.trim();
+  const query =
+    `${state.canonicalPayment?.errorCode || ""} ${state.canonicalPayment?.errorDescription || ""} ${state.canonicalPayment?.method || ""}`.trim();
   const chunks = await retrieveRecoveryKnowledge(query || "payment failed");
 
   return {
@@ -146,8 +150,10 @@ export async function diagnoseFailureNode(state: RecoverState): Promise<Partial<
   const knowledgeContext =
     state.retrievedKnowledge.length > 0
       ? state.retrievedKnowledge
-          .map((k) => `[Source: ${k.source} | Score: ${Math.round(k.score * 100)}%]
-${k.content}`)
+          .map(
+            (k) => `[Source: ${k.source} | Score: ${Math.round(k.score * 100)}%]
+${k.content}`,
+          )
           .join("\n\n")
       : "No domain knowledge chunks matched this error. Diagnose based strictly on provider facts.";
 
@@ -170,12 +176,9 @@ Provide a high-confidence diagnosis summary and list evidence fields.`;
   const rawDiagnosis = await structuredModel.invoke(prompt);
 
   // Provenance Sanitization: Ensure knowledgeRefs are built only from verified retrieved sources
-  const validSources = new Set(
-    state.retrievedKnowledge.map((k) => k.source).filter(Boolean)
-  );
-  const sanitizedKnowledgeRefs = state.retrievedKnowledge.length > 0
-    ? Array.from(validSources)
-    : [];
+  const validSources = new Set(state.retrievedKnowledge.map((k) => k.source).filter(Boolean));
+  const sanitizedKnowledgeRefs =
+    state.retrievedKnowledge.length > 0 ? Array.from(validSources) : [];
 
   const diagnosis = {
     ...rawDiagnosis,
@@ -196,7 +199,11 @@ Provide a high-confidence diagnosis summary and list evidence fields.`;
     case_id: state.caseId,
     event_type: "AI_DIAGNOSIS_COMPLETED",
     label: `AI diagnosed: ${diagnosis.failureClass}`,
-    data: { failureClass: diagnosis.failureClass, confidence: diagnosis.confidence, summary: diagnosis.summary },
+    data: {
+      failureClass: diagnosis.failureClass,
+      confidence: diagnosis.confidence,
+      summary: diagnosis.summary,
+    },
   });
   requireDbMutation(eventRes, "insert AI_DIAGNOSIS_COMPLETED event");
 
@@ -244,7 +251,7 @@ export async function recoveryGateNode(state: RecoverState): Promise<Partial<Rec
     .eq("case_id", state.caseId);
 
   const attemptCount = (existingActions || []).filter((a) =>
-    ["CREATING", "CREATED", "UNCERTAIN", "PAID", "CANCELLED", "FAILED"].includes(a.status)
+    ["CREATING", "CREATED", "UNCERTAIN", "PAID", "CANCELLED", "FAILED"].includes(a.status),
   ).length;
 
   const gateResult = evaluateRecoveryGate({
@@ -252,7 +259,9 @@ export async function recoveryGateNode(state: RecoverState): Promise<Partial<Rec
     canonicalPayment: state.canonicalPayment,
     canonicalOrder: state.canonicalOrder,
     orderPayments: state.orderPayments,
-    existingActiveAction: existingActions?.find((a) => ["CREATING", "CREATED", "UNCERTAIN"].includes(a.status)),
+    existingActiveAction: existingActions?.find((a) =>
+      ["CREATING", "CREATED", "UNCERTAIN"].includes(a.status),
+    ),
     attemptCount,
     failureClass: state.diagnosis?.failureClass || "UNKNOWN",
     confidence: state.diagnosis?.confidence || 0,
@@ -308,7 +317,9 @@ export async function recoveryGateNode(state: RecoverState): Promise<Partial<Rec
   const eventRes = await supabase.from("case_events").insert({
     case_id: state.caseId,
     event_type: gateResult.authorized ? "RECOVERY_GATE_AUTHORIZED" : "RECOVERY_GATE_DENIED",
-    label: gateResult.authorized ? "Recovery Gate authorized action" : "Recovery Gate denied action",
+    label: gateResult.authorized
+      ? "Recovery Gate authorized action"
+      : "Recovery Gate denied action",
     data: { authorized: gateResult.authorized, reasonCodes: gateResult.reasonCodes },
   });
   requireDbMutation(eventRes, "insert recovery gate event");
@@ -339,7 +350,9 @@ export async function recoveryGateNode(state: RecoverState): Promise<Partial<Rec
 // ----------------------------------------------------------------------------
 // 7A. mark_awaiting_approval (Side effects execute before interrupt)
 // ----------------------------------------------------------------------------
-export async function markAwaitingApprovalNode(state: RecoverState): Promise<Partial<RecoverState>> {
+export async function markAwaitingApprovalNode(
+  state: RecoverState,
+): Promise<Partial<RecoverState>> {
   await updateCaseStatus(state.caseId, "WAITING_APPROVAL");
   const eventRes = await supabase.from("case_events").insert({
     case_id: state.caseId,
@@ -353,7 +366,9 @@ export async function markAwaitingApprovalNode(state: RecoverState): Promise<Par
 // ----------------------------------------------------------------------------
 // 7B. await_approval_interrupt (Pure interrupt node with no side effects)
 // ----------------------------------------------------------------------------
-export async function awaitApprovalInterruptNode(state: RecoverState): Promise<Partial<RecoverState>> {
+export async function awaitApprovalInterruptNode(
+  state: RecoverState,
+): Promise<Partial<RecoverState>> {
   const decision = interrupt({
     type: "RECOVERY_APPROVAL",
     caseId: state.caseId,
@@ -375,7 +390,9 @@ export async function awaitApprovalInterruptNode(state: RecoverState): Promise<P
 // ----------------------------------------------------------------------------
 // 7C. process_approval_decision (Durable side effects on resume)
 // ----------------------------------------------------------------------------
-export async function processApprovalDecisionNode(state: RecoverState): Promise<Partial<RecoverState>> {
+export async function processApprovalDecisionNode(
+  state: RecoverState,
+): Promise<Partial<RecoverState>> {
   if (state.approval?.status === "APPROVED") {
     await updateCaseStatus(state.caseId, "RECOVERY_APPROVED");
     const eventRes = await supabase.from("case_events").insert({
@@ -408,7 +425,8 @@ export async function preflightRevalidateNode(state: RecoverState): Promise<Part
   if (payment.order_id) {
     const rawOrder = await fetchRazorpayOrder(payment.order_id);
     const payments = await fetchPaymentsForOrder(payment.order_id);
-    orderPaid = rawOrder.status === "paid" || payments.some((p) => p.captured || p.status === "captured");
+    orderPaid =
+      rawOrder.status === "paid" || payments.some((p) => p.captured || p.status === "captured");
   }
 
   if (payment.captured || payment.status === "captured" || orderPaid) {
@@ -451,7 +469,7 @@ export async function createRecoveryLinkNode(state: RecoverState): Promise<Parti
         currency: state.gate!.currency,
         status: "CREATING",
       },
-      { onConflict: "reference_id" }
+      { onConflict: "reference_id" },
     )
     .select("id")
     .single();
@@ -520,7 +538,9 @@ export async function createRecoveryLinkNode(state: RecoverState): Promise<Parti
 // ----------------------------------------------------------------------------
 // 10. reconcile_link_creation (Handles uncertainty by querying referenceId)
 // ----------------------------------------------------------------------------
-export async function reconcileLinkCreationNode(state: RecoverState): Promise<Partial<RecoverState>> {
+export async function reconcileLinkCreationNode(
+  state: RecoverState,
+): Promise<Partial<RecoverState>> {
   const referenceId = state.action?.referenceId;
   if (!referenceId) return { terminalStatus: "FAILED_SAFE" };
 
@@ -562,7 +582,9 @@ export async function reconcileLinkCreationNode(state: RecoverState): Promise<Pa
 // ----------------------------------------------------------------------------
 // 11A. mark_waiting_recovery_payment (Side effects before interrupt)
 // ----------------------------------------------------------------------------
-export async function markWaitingRecoveryPaymentNode(state: RecoverState): Promise<Partial<RecoverState>> {
+export async function markWaitingRecoveryPaymentNode(
+  state: RecoverState,
+): Promise<Partial<RecoverState>> {
   await updateCaseStatus(state.caseId, "WAITING_RECOVERY_PAYMENT");
   const eventRes = await supabase.from("case_events").insert({
     case_id: state.caseId,
@@ -576,7 +598,9 @@ export async function markWaitingRecoveryPaymentNode(state: RecoverState): Promi
 // ----------------------------------------------------------------------------
 // 11B. await_recovery_event_interrupt (Pure interrupt node)
 // ----------------------------------------------------------------------------
-export async function awaitRecoveryEventInterruptNode(state: RecoverState): Promise<Partial<RecoverState>> {
+export async function awaitRecoveryEventInterruptNode(
+  state: RecoverState,
+): Promise<Partial<RecoverState>> {
   const event = interrupt({
     type: "AWAIT_PAYMENT_EVENT",
     caseId: state.caseId,
@@ -603,7 +627,9 @@ export async function awaitRecoveryEventInterruptNode(state: RecoverState): Prom
 // ----------------------------------------------------------------------------
 // 12. handle_original_late_capture (Cancels link if original payment captures)
 // ----------------------------------------------------------------------------
-export async function handleOriginalLateCaptureNode(state: RecoverState): Promise<Partial<RecoverState>> {
+export async function handleOriginalLateCaptureNode(
+  state: RecoverState,
+): Promise<Partial<RecoverState>> {
   if (state.action?.paymentLinkId) {
     try {
       await cancelPaymentLink(state.action.paymentLinkId);
@@ -661,7 +687,12 @@ export async function verifyRecoveryNode(state: RecoverState): Promise<Partial<R
   const paymentLink = await fetchPaymentLink(paymentLinkId);
   const originalPayment = await fetchRazorpayPayment(state.originalPaymentId);
 
-  let originalOrderPayments: Array<{ id: string; status: string; captured: boolean; amount: number }> = [];
+  let originalOrderPayments: Array<{
+    id: string;
+    status: string;
+    captured: boolean;
+    amount: number;
+  }> = [];
   if (originalPayment.order_id) {
     originalOrderPayments = await fetchPaymentsForOrder(originalPayment.order_id);
   }
@@ -713,8 +744,12 @@ export async function verifyRecoveryNode(state: RecoverState): Promise<Partial<R
     {
       key: "NO_CAPTURED_ORIGINAL_SIBLINGS",
       expected: 0,
-      observed: originalOrderPayments.filter((p) => p.id !== recoveryPayment.id && (p.captured || p.status === "captured")).length,
-      passed: !originalOrderPayments.some((p) => p.id !== recoveryPayment.id && (p.captured || p.status === "captured")),
+      observed: originalOrderPayments.filter(
+        (p) => p.id !== recoveryPayment.id && (p.captured || p.status === "captured"),
+      ).length,
+      passed: !originalOrderPayments.some(
+        (p) => p.id !== recoveryPayment.id && (p.captured || p.status === "captured"),
+      ),
     },
   ];
 
@@ -736,7 +771,7 @@ export async function verifyRecoveryNode(state: RecoverState): Promise<Partial<R
       status: receiptStatus,
       verified_at: new Date().toISOString(),
     },
-    { onConflict: "case_id" }
+    { onConflict: "case_id" },
   );
   requireDbMutation(receiptUpsert, "upsert verification_receipts");
 
@@ -822,9 +857,7 @@ export function createRecoverGraph() {
   });
 
   workflow.addConditionalEdges("reconcile_link_creation", (state) => {
-    return state.terminalStatus === "FAILED_SAFE"
-      ? END
-      : "mark_waiting_recovery_payment";
+    return state.terminalStatus === "FAILED_SAFE" ? END : "mark_waiting_recovery_payment";
   });
 
   workflow.addEdge("mark_waiting_recovery_payment", "await_recovery_event_interrupt");

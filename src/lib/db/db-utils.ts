@@ -1,6 +1,6 @@
 ﻿export function requireDbSuccess<T>(
   res: { data: T | null; error: { message: string; code?: string; details?: string } | null },
-  operationName: string
+  operationName: string,
 ): T {
   if (res.error || !res.data) {
     const code = res.error?.code ? `[Code: ${res.error.code}] ` : "";
@@ -13,7 +13,7 @@
 
 export function requireDbMutation(
   res: { error: { message: string; code?: string; details?: string } | null },
-  operationName: string
+  operationName: string,
 ): void {
   if (res.error) {
     const code = res.error?.code ? `[Code: ${res.error.code}] ` : "";

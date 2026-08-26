@@ -1,14 +1,6 @@
 ﻿import { useState, useEffect, useRef } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import {
-  ArrowRight,
-  CheckCircle2,
-  Clock,
-  Info,
-  Loader2,
-  RefreshCw,
-  XCircle,
-} from "lucide-react";
+import { ArrowRight, CheckCircle2, Clock, Info, Loader2, RefreshCw, XCircle } from "lucide-react";
 import { DemoButton, Field, PaymentStatusBadge, Panel, StepRow } from "@/components/demo/ui";
 import {
   createTestPaymentFn,
@@ -249,7 +241,7 @@ function CreatePayment() {
       setErrorMessage(
         err instanceof Error
           ? err.message
-          : "Failed to connect to Razorpay Test API. Ensure valid credentials in .env"
+          : "Failed to connect to Razorpay Test API. Ensure valid credentials in .env",
       );
     } finally {
       setLoading(false);
@@ -267,12 +259,16 @@ function CreatePayment() {
 
     const loaded = await loadRazorpayScript();
     if (!loaded || !window.Razorpay) {
-      setErrorMessage("Could not load Razorpay Checkout SDK. Please check your internet connection.");
+      setErrorMessage(
+        "Could not load Razorpay Checkout SDK. Please check your internet connection.",
+      );
       return;
     }
 
     if (!realOrder.razorpayKeyId) {
-      setErrorMessage("RAZORPAY_KEY_ID is missing from environment. Please configure your Test Mode key.");
+      setErrorMessage(
+        "RAZORPAY_KEY_ID is missing from environment. Please configure your Test Mode key.",
+      );
       return;
     }
 
@@ -315,18 +311,21 @@ function CreatePayment() {
       failureObservedRef.current = true;
       setCheckoutState("CLIENT_FAILURE_REPORTED");
 
-      const errorPayload = (response as {
-        error?: {
-          code?: string;
-          description?: string;
-          source?: string;
-          step?: string;
-          reason?: string;
-          metadata?: { payment_id?: string; paymentId?: string; order_id?: string };
-        };
-      })?.error;
+      const errorPayload = (
+        response as {
+          error?: {
+            code?: string;
+            description?: string;
+            source?: string;
+            step?: string;
+            reason?: string;
+            metadata?: { payment_id?: string; paymentId?: string; order_id?: string };
+          };
+        }
+      )?.error;
 
-      const candidateId = errorPayload?.metadata?.payment_id || errorPayload?.metadata?.paymentId || null;
+      const candidateId =
+        errorPayload?.metadata?.payment_id || errorPayload?.metadata?.paymentId || null;
       if (candidateId) {
         candidatePaymentIdRef.current = candidateId;
         setCandidatePaymentId(candidateId);
@@ -367,12 +366,16 @@ function CreatePayment() {
         setErrorMessage("Recover could not find the durable test session for this payment.");
         setCheckoutState("ERROR");
       } else if (res.status === "NO_PAYMENT_ATTEMPT_FOUND") {
-        setErrorMessage("Razorpay reports no payment attempts on this order yet. Try completing or failing a payment in Checkout.");
+        setErrorMessage(
+          "Razorpay reports no payment attempts on this order yet. Try completing or failing a payment in Checkout.",
+        );
       } else {
         setErrorMessage(`Provider status: ${res.status}. Payment is not in failed state.`);
       }
     } catch (err: unknown) {
-      setErrorMessage(err instanceof Error ? err.message : "Failed to reconcile with Razorpay API.");
+      setErrorMessage(
+        err instanceof Error ? err.message : "Failed to reconcile with Razorpay API.",
+      );
     } finally {
       setManualChecking(false);
     }
@@ -407,7 +410,8 @@ function CreatePayment() {
       <div className="mt-8 grid gap-6 lg:grid-cols-[1.4fr_1fr]">
         <div className="space-y-4">
           <Panel title="Payment details">
-            {checkoutState === "CONFIRMING_PROVIDER_FAILURE" || checkoutState === "CLIENT_FAILURE_REPORTED" ? (
+            {checkoutState === "CONFIRMING_PROVIDER_FAILURE" ||
+            checkoutState === "CLIENT_FAILURE_REPORTED" ? (
               <div className="space-y-6 py-4">
                 <div className="flex flex-col items-center gap-2 text-center">
                   <div className="flex h-10 w-10 items-center justify-center rounded-full bg-brand-soft text-brand">
@@ -462,7 +466,8 @@ function CreatePayment() {
                 <div>
                   <h3 className="text-base font-bold text-foreground">Checkout closed</h3>
                   <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
-                    No failed payment has been confirmed yet. You closed the checkout without a verified failure.
+                    No failed payment has been confirmed yet. You closed the checkout without a
+                    verified failure.
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center justify-center gap-3">
@@ -488,7 +493,8 @@ function CreatePayment() {
                     Razorpay confirmation is taking longer than expected
                   </h3>
                   <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
-                    We haven't received a confirmed failed payment from Razorpay yet. You can manually check provider state or reopen checkout.
+                    We haven't received a confirmed failed payment from Razorpay yet. You can
+                    manually check provider state or reopen checkout.
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center justify-center gap-3">
@@ -535,7 +541,8 @@ function CreatePayment() {
                 </div>
 
                 <div className="mt-4 rounded-xl border border-brand-soft bg-brand-softer/60 px-3.5 py-2.5 text-xs text-brand">
-                  💡 <strong>Demo note:</strong> Checkout retry is disabled so Recover can take over after the first failed attempt.
+                  💡 <strong>Demo note:</strong> Checkout retry is disabled so Recover can take over
+                  after the first failed attempt.
                 </div>
 
                 <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -635,7 +642,9 @@ function CreatePayment() {
                   loading={loading}
                   disabled={!formValid}
                 >
-                  {loading ? "Creating payment..." : `Create ${formatINR(amountMinor)} Test Payment`}
+                  {loading
+                    ? "Creating payment..."
+                    : `Create ${formatINR(amountMinor)} Test Payment`}
                 </DemoButton>
 
                 <p className="text-[11px] leading-5 text-muted-foreground">
@@ -686,12 +695,16 @@ function CreatePayment() {
           </Panel>
 
           <div className="rounded-2xl border border-brand-soft bg-brand-softer px-4 py-3">
-            <p className="text-[10px] font-bold tracking-wide text-brand uppercase">Razorpay Test Mode</p>
+            <p className="text-[10px] font-bold tracking-wide text-brand uppercase">
+              Razorpay Test Mode
+            </p>
             <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
-              This creates real Razorpay sandbox objects (Orders, Payments, Payment Links). No real money moves.
+              This creates real Razorpay sandbox objects (Orders, Payments, Payment Links). No real
+              money moves.
             </p>
             <p className="mt-2 text-[11px] leading-5 text-muted-foreground">
-              Trigger a deliberate failure in Razorpay Checkout to test AI failure diagnosis, deterministic gating, and recovery.
+              Trigger a deliberate failure in Razorpay Checkout to test AI failure diagnosis,
+              deterministic gating, and recovery.
             </p>
           </div>
 

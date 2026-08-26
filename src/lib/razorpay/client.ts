@@ -11,13 +11,13 @@ export function getRazorpayConfig() {
 
   if (mode !== "test") {
     throw new Error(
-      `[Razorpay Safety Gate] RECOVER_RAZORPAY_MODE is set to '${mode}'. Production live transactions are strictly blocked in this build.`
+      `[Razorpay Safety Gate] RECOVER_RAZORPAY_MODE is set to '${mode}'. Production live transactions are strictly blocked in this build.`,
     );
   }
 
   if (keyId && !keyId.startsWith("rzp_test_")) {
     throw new Error(
-      `[Razorpay Safety Gate] Invalid Test Mode key ID: ${keyId}. Key ID must start with 'rzp_test_'.`
+      `[Razorpay Safety Gate] Invalid Test Mode key ID: ${keyId}. Key ID must start with 'rzp_test_'.`,
     );
   }
 
@@ -42,7 +42,7 @@ export async function razorpayRequest<T>(
   options: {
     method?: string;
     body?: Record<string, unknown>;
-  } = {}
+  } = {},
 ): Promise<T> {
   const auth = getAuthHeader();
   const url = `https://api.razorpay.com/v1${path.startsWith("/") ? path : `/${path}`}`;
@@ -65,7 +65,7 @@ export async function razorpayRequest<T>(
       errJson = errText;
     }
     throw new Error(
-      `Razorpay API Error [${res.status} ${res.statusText}] at ${path}: ${JSON.stringify(errJson)}`
+      `Razorpay API Error [${res.status} ${res.statusText}] at ${path}: ${JSON.stringify(errJson)}`,
     );
   }
 

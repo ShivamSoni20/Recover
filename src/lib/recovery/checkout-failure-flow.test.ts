@@ -15,7 +15,7 @@ describe("Razorpay Test Checkout Failure-Handling & Recovery Specification", () 
   // Test 1: Modal dismiss without payment attempt -> no failed state / no case
   it("1. Modal dismiss without payment attempt does not create a recovery case or start graph", async () => {
     const workflowSpy = vi.spyOn(runnerMod, "startRecoveryWorkflow");
-    
+
     // Simulate what happens on modal dismiss without failureObserved:
     // Frontend transitions to CHECKOUT_DISMISSED, no server calls made to process failure
     expect(workflowSpy).not.toHaveBeenCalled();
@@ -79,7 +79,11 @@ describe("Razorpay Test Checkout Failure-Handling & Recovery Specification", () 
           select: vi.fn().mockReturnValue({
             eq: vi.fn().mockReturnValue({
               maybeSingle: vi.fn().mockResolvedValue({
-                data: { session_id: "sess_recon_001", order_id: "order_recon_001", recovery_case_id: null },
+                data: {
+                  session_id: "sess_recon_001",
+                  order_id: "order_recon_001",
+                  recovery_case_id: null,
+                },
                 error: null,
               }),
             }),
@@ -189,7 +193,11 @@ describe("Razorpay Test Checkout Failure-Handling & Recovery Specification", () 
           select: vi.fn().mockReturnValue({
             eq: vi.fn().mockReturnValue({
               maybeSingle: vi.fn().mockResolvedValue({
-                data: { session_id: "sess_success", order_id: "order_success", recovery_case_id: null },
+                data: {
+                  session_id: "sess_success",
+                  order_id: "order_success",
+                  recovery_case_id: null,
+                },
                 error: null,
               }),
             }),
@@ -293,7 +301,11 @@ describe("Razorpay Test Checkout Failure-Handling & Recovery Specification", () 
           select: vi.fn().mockReturnValue({
             eq: vi.fn().mockReturnValue({
               maybeSingle: vi.fn().mockResolvedValue({
-                data: { session_id: "sess_candidate", order_id: "order_cand_1", recovery_case_id: null },
+                data: {
+                  session_id: "sess_candidate",
+                  order_id: "order_cand_1",
+                  recovery_case_id: null,
+                },
                 error: null,
               }),
             }),
@@ -380,7 +392,7 @@ describe("Razorpay Test Checkout Failure-Handling & Recovery Specification", () 
         paymentId: "pay_alien_999",
         orderId: "order_expected_111",
         provenance: "CANONICAL_API_RECONCILIATION",
-      })
+      }),
     ).rejects.toThrow("order mismatch");
   });
 

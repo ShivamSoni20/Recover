@@ -21,7 +21,7 @@ export interface ProcessFailedPaymentResult {
 }
 
 export async function processCanonicalFailedPayment(
-  params: ProcessFailedPaymentParams
+  params: ProcessFailedPaymentParams,
 ): Promise<ProcessFailedPaymentResult> {
   const { paymentId, orderId, provenance } = params;
 
@@ -34,13 +34,13 @@ export async function processCanonicalFailedPayment(
   // 2. Security & Integrity Verifications: Provider Truth Only
   if (payment.status !== "failed") {
     throw new Error(
-      `Cannot process recovery for payment '${payment.id}': canonical status is '${payment.status}', expected 'failed'.`
+      `Cannot process recovery for payment '${payment.id}': canonical status is '${payment.status}', expected 'failed'.`,
     );
   }
 
   if (orderId && payment.order_id && payment.order_id !== orderId) {
     throw new Error(
-      `Payment '${payment.id}' order mismatch: belongs to '${payment.order_id}', expected '${orderId}'.`
+      `Payment '${payment.id}' order mismatch: belongs to '${payment.order_id}', expected '${orderId}'.`,
     );
   }
 

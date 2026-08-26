@@ -82,7 +82,9 @@ function DemoWelcome() {
     failureDetail: c.failure_detail,
     method: c.method || "UPI",
     failedAt: c.failed_at ? new Date(c.failed_at).toLocaleTimeString() : null,
-    confidence: c.recovery_diagnoses?.[0]?.confidence ? Math.round(Number(c.recovery_diagnoses[0].confidence) * 100) : 0,
+    confidence: c.recovery_diagnoses?.[0]?.confidence
+      ? Math.round(Number(c.recovery_diagnoses[0].confidence) * 100)
+      : 0,
     failureClass: c.recovery_diagnoses?.[0]?.failure_class || "UNKNOWN",
     diagnosis: c.recovery_diagnoses?.[0]?.summary || "",
     recoveryStrategy: c.action_authorizations?.[0]?.strategy || "FRESH_CHECKOUT",

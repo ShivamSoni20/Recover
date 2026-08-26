@@ -13,12 +13,14 @@ export class OpenRouterEmbeddings extends Embeddings {
       modelName?: string;
       apiKey?: string;
       dimensions?: number;
-    }
+    },
   ) {
     super(fields ?? {});
     this.apiKey = fields?.apiKey || process.env.OPENROUTER_API_KEY || "";
     this.modelName =
-      fields?.modelName || process.env.OPENROUTER_EMBEDDING_MODEL || "openai/text-embedding-3-small";
+      fields?.modelName ||
+      process.env.OPENROUTER_EMBEDDING_MODEL ||
+      "openai/text-embedding-3-small";
     this.dimensions = fields?.dimensions;
   }
 

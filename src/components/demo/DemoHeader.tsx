@@ -16,7 +16,11 @@ export function DemoHeader() {
         </Link>
 
         <nav className="hidden items-center gap-6 text-xs font-semibold text-muted-foreground md:flex">
-          <Link to="/demo" activeProps={{ className: "text-foreground" }} activeOptions={{ exact: true }}>
+          <Link
+            to="/demo"
+            activeProps={{ className: "text-foreground" }}
+            activeOptions={{ exact: true }}
+          >
             Demo
           </Link>
           <Link to="/demo/create" activeProps={{ className: "text-foreground" }}>
@@ -36,7 +40,8 @@ export function DemoHeader() {
                 </span>
               </TooltipTrigger>
               <TooltipContent className="max-w-xs text-xs">
-                Real Razorpay sandbox objects (Orders, Payments, Payment Links). No real money moves.
+                Real Razorpay sandbox objects (Orders, Payments, Payment Links). No real money
+                moves.
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
