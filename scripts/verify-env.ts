@@ -9,9 +9,17 @@ function verifyEnvironment() {
   const checks = [
     { name: "APP_BASE_URL", value: process.env.APP_BASE_URL, required: false },
     { name: "OPENROUTER_API_KEY", value: process.env.OPENROUTER_API_KEY, required: true },
-    { name: "OPENROUTER_MODEL", value: process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini", required: false },
+    {
+      name: "OPENROUTER_MODEL",
+      value: process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini",
+      required: false,
+    },
     { name: "SUPABASE_URL", value: process.env.SUPABASE_URL, required: true },
-    { name: "SUPABASE_SERVICE_ROLE_KEY", value: process.env.SUPABASE_SERVICE_ROLE_KEY, required: true },
+    {
+      name: "SUPABASE_SERVICE_ROLE_KEY",
+      value: process.env.SUPABASE_SERVICE_ROLE_KEY,
+      required: true,
+    },
     { name: "DATABASE_URL", value: process.env.DATABASE_URL, required: true },
     { name: "RECOVER_RAZORPAY_MODE", value: process.env.RECOVER_RAZORPAY_MODE, required: true },
     { name: "RAZORPAY_KEY_ID", value: process.env.RAZORPAY_KEY_ID, required: true },
@@ -26,15 +34,24 @@ function verifyEnvironment() {
       console.error(`❌ [Missing] ${check.name} is required.`);
       hasError = true;
     } else if (check.name === "RECOVER_RAZORPAY_MODE" && check.value !== "test") {
-      console.error(`❌ [Safety Gate] RECOVER_RAZORPAY_MODE must be 'test'. Found '${check.value}'.`);
+      console.error(
+        `❌ [Safety Gate] RECOVER_RAZORPAY_MODE must be 'test'. Found '${check.value}'.`,
+      );
       hasError = true;
-    } else if (check.name === "RAZORPAY_KEY_ID" && check.value && !check.value.startsWith("rzp_test_")) {
-      console.error(`❌ [Safety Gate] RAZORPAY_KEY_ID must start with 'rzp_test_'. Found '${check.value}'.`);
+    } else if (
+      check.name === "RAZORPAY_KEY_ID" &&
+      check.value &&
+      !check.value.startsWith("rzp_test_")
+    ) {
+      console.error(
+        `❌ [Safety Gate] RAZORPAY_KEY_ID must start with 'rzp_test_'. Found '${check.value}'.`,
+      );
       hasError = true;
     } else {
-      const displayVal = check.name.includes("KEY") || check.name.includes("SECRET") || check.name.includes("URL")
-        ? check.value?.slice(0, 10) + "..."
-        : check.value;
+      const displayVal =
+        check.name.includes("KEY") || check.name.includes("SECRET") || check.name.includes("URL")
+          ? check.value?.slice(0, 10) + "..."
+          : check.value;
       console.log(`✓ [Configured] ${check.name}: ${displayVal}`);
     }
   }

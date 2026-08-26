@@ -52,11 +52,9 @@ describe("Webhook Ingestion, Atomic Claim & Concurrency (server.ts)", () => {
 
     // Simulate in-memory database atomic claim behavior
     let currentDbStatus = "RECEIVED";
-    let claimCallCount = 0;
 
     vi.spyOn(supabase as any, "rpc").mockImplementation(async (...callArgs: any[]) => {
       if (callArgs[0] === "claim_webhook_event") {
-        claimCallCount++;
         if (currentDbStatus === "RECEIVED") {
           currentDbStatus = "PROCESSING";
           return {
@@ -93,7 +91,6 @@ describe("Webhook Ingestion, Atomic Claim & Concurrency (server.ts)", () => {
     const req1 = createSignedRequest(payload, "evt_race_001");
     const req2 = createSignedRequest(payload, "evt_race_001");
 
-    // Fire both concurrently
     const [res1, res2] = await Promise.all([
       server.fetch(req1, {}, {}),
       server.fetch(req2, {}, {}),
@@ -105,11 +102,8 @@ describe("Webhook Ingestion, Atomic Claim & Concurrency (server.ts)", () => {
     const json1 = await res1.json();
     const json2 = await res2.json();
 
-    // Exactly one winner and one concurrent_processing response
     const statuses = [json1.status, json2.status].sort();
     expect(statuses).toEqual(["concurrent_processing", "processed"]);
-
-    // Exactly 1 downstream execution
     expect(processSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -176,13 +170,11 @@ describe("Webhook Ingestion, Atomic Claim & Concurrency (server.ts)", () => {
       },
     };
 
-    // Attempt 1: fails downstream
     const req1 = createSignedRequest(payload, "evt_retry_001");
     const res1 = await server.fetch(req1, {}, {});
     expect(res1.status).toBe(500);
     expect(currentDbStatus).toBe("FAILED_RETRYABLE");
 
-    // Attempt 2: Provider retries same event -> claim succeeds -> processing succeeds -> PROCESSED
     const req2 = createSignedRequest(payload, "evt_retry_001");
     const res2 = await server.fetch(req2, {}, {});
     expect(res2.status).toBe(200);
@@ -193,12 +185,117 @@ describe("Webhook Ingestion, Atomic Claim & Concurrency (server.ts)", () => {
     expect(processSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("4. Success Webhook Atomic Claim: Races between payment_link.paid and payment.captured resume workflow exactly once", async () => {
-    const resumeSpy = vi
-      .spyOn(runnerMod, "resumeWorkflowWithPaymentEvent")
-      .mockResolvedValue(undefined);
+  it("4. Stale Webhook Lease: Stale PROCESSING event (>2 min) can be reclaimed by retry", async () => {
+    const processSpy = vi.spyOn(processMod, "processCanonicalFailedPayment").mockResolvedValue({
+      success: true,
+      caseId: "case-stale-1",
+      caseNumber: "RCV-STALE",
+      isNew: true,
+      paymentId: "pay_stale_1",
+    });
 
-    let linkClaimed = false;
+    // Simulate stale lease reclaim in RPC
+    let attempt = 1;
+    vi.spyOn(supabase as any, "rpc").mockImplementation(async (...callArgs: any[]) => {
+      if (callArgs[0] === "claim_webhook_event") {
+        attempt++;
+        return {
+          data: [{ claimed: true, current_status: "PROCESSING", attempt_count: attempt }],
+          error: null,
+        } as any;
+      }
+      return { data: null, error: null } as any;
+    });
+
+    vi.spyOn(supabase as any, "from").mockReturnValue({
+      update: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) }),
+    } as any);
+
+    const payload = {
+      event: "payment.failed",
+      payload: {
+        payment: {
+          entity: {
+            id: "pay_stale_1",
+            order_id: "order_stale_1",
+            status: "failed",
+          },
+        },
+      },
+    };
+
+    const req = createSignedRequest(payload, "evt_stale_lease");
+    const res = await server.fetch(req, {}, {});
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe("processed");
+    expect(processSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("5. Claim DB Outage: Database error claiming event returns HTTP 500 (never false 200)", async () => {
+    vi.spyOn(supabase as any, "rpc").mockResolvedValue({
+      data: null,
+      error: { message: "Database connection timeout", code: "57P01" },
+    } as any);
+
+    const payload = {
+      event: "payment.failed",
+      payload: { payment: { entity: { id: "pay_db_err", order_id: "order_db_err" } } },
+    };
+
+    const req = createSignedRequest(payload, "evt_db_error");
+    const res = await server.fetch(req, {}, {});
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json.error).toBe("Webhook processing unavailable");
+  });
+
+  it("6. Final PROCESSED Write Failure: If marking PROCESSED fails, returns HTTP 500", async () => {
+    vi.spyOn(processMod, "processCanonicalFailedPayment").mockResolvedValue({
+      success: true,
+      caseId: "case-proc-fail",
+      caseNumber: "RCV-PROCF",
+      isNew: true,
+      paymentId: "pay_proc_1",
+    });
+
+    vi.spyOn(supabase as any, "rpc").mockResolvedValue({
+      data: [{ claimed: true, current_status: "PROCESSING", attempt_count: 1 }],
+      error: null,
+    } as any);
+
+    // Fail the final status update
+    vi.spyOn(supabase as any, "from").mockImplementation((...callArgs: any[]) => {
+      if (callArgs[0] === "webhook_events") {
+        return {
+          update: vi.fn().mockReturnValue({
+            eq: vi
+              .fn()
+              .mockResolvedValue({ error: { message: "Lock wait timeout", code: "55P03" } }),
+          }),
+        } as any;
+      }
+      return {
+        update: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) }),
+      } as any;
+    });
+
+    const payload = {
+      event: "payment.failed",
+      payload: { payment: { entity: { id: "pay_proc_1", order_id: "order_proc_1" } } },
+    };
+
+    const req = createSignedRequest(payload, "evt_proc_fail");
+    const res = await server.fetch(req, {}, {});
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json.error).toBe("Failed to mark webhook as processed");
+  });
+
+  it("7. Recovery Success Event: Resumes graph and marks event applied retryably", async () => {
+    const resumeSpy = vi
+      .spyOn(runnerMod, "ensureRecoveryPaymentEventApplied")
+      .mockResolvedValue(undefined);
 
     vi.spyOn(supabase as any, "rpc").mockResolvedValue({
       data: [{ claimed: true, current_status: "PROCESSING", attempt_count: 1 }],
@@ -208,23 +305,21 @@ describe("Webhook Ingestion, Atomic Claim & Concurrency (server.ts)", () => {
     vi.spyOn(supabase as any, "from").mockImplementation((...callArgs: any[]) => {
       if (callArgs[0] === "recovery_actions") {
         return {
-          update: vi.fn().mockReturnValue({
+          select: vi.fn().mockReturnValue({
             eq: vi.fn().mockReturnValue({
-              is: vi.fn().mockReturnValue({
-                select: vi.fn().mockReturnValue({
-                  maybeSingle: vi.fn().mockImplementation(async () => {
-                    if (!linkClaimed) {
-                      linkClaimed = true;
-                      return {
-                        data: { case_id: "case-success-123", payment_link_id: "plink_123" },
-                        error: null,
-                      };
-                    }
-                    return { data: null, error: null };
-                  }),
-                }),
+              maybeSingle: vi.fn().mockResolvedValue({
+                data: {
+                  id: "act_123",
+                  case_id: "case-success-123",
+                  payment_link_id: "plink_123",
+                  accepted_success_event_id: null,
+                },
+                error: null,
               }),
             }),
+          }),
+          update: vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue({ error: null }),
           }),
         } as any;
       }
@@ -233,7 +328,7 @@ describe("Webhook Ingestion, Atomic Claim & Concurrency (server.ts)", () => {
       } as any;
     });
 
-    const payloadLinkPaid = {
+    const payload = {
       event: "payment_link.paid",
       payload: {
         payment_link: { entity: { id: "plink_123" } },
@@ -241,38 +336,16 @@ describe("Webhook Ingestion, Atomic Claim & Concurrency (server.ts)", () => {
       },
     };
 
-    const payloadPaymentCaptured = {
-      event: "payment.captured",
-      payload: {
-        payment: {
-          entity: {
-            id: "pay_recovery_1",
-            amount: 299900,
-            notes: { payment_link_id: "plink_123" },
-          },
-        },
-      },
-    };
+    const req = createSignedRequest(payload, "evt_succ_retryable");
+    const res = await server.fetch(req, {}, {});
+    expect(res.status).toBe(200);
 
-    const reqLink = createSignedRequest(payloadLinkPaid, "evt_succ_link");
-    const reqPayment = createSignedRequest(payloadPaymentCaptured, "evt_succ_pay");
-
-    const [res1, res2] = await Promise.all([
-      server.fetch(reqLink, {}, {}),
-      server.fetch(reqPayment, {}, {}),
-    ]);
-
-    expect(res1.status).toBe(200);
-    expect(res2.status).toBe(200);
-
-    // Exactly one resume invocation
     expect(resumeSpy).toHaveBeenCalledTimes(1);
     expect(resumeSpy).toHaveBeenCalledWith(
-      "case-success-123",
       expect.objectContaining({
-        kind: "RECOVERY_PAYMENT_CAPTURED",
-        paymentId: "pay_recovery_1",
+        caseId: "case-success-123",
         paymentLinkId: "plink_123",
+        paymentId: "pay_recovery_1",
       }),
     );
   });

@@ -47,8 +47,12 @@ function isH3SwallowedErrorBody(body: string): boolean {
 import nodeCrypto from "node:crypto";
 import { verifyRazorpayWebhookSignature } from "./lib/razorpay/webhooks";
 import { supabase } from "./lib/db/supabase";
-import { resumeWorkflowWithPaymentEvent } from "./lib/graph/runner";
+import {
+  resumeWorkflowWithPaymentEvent,
+  ensureRecoveryPaymentEventApplied,
+} from "./lib/graph/runner";
 import { processCanonicalFailedPayment } from "./lib/recovery/process-failed-payment";
+import { requireDbMutation } from "./lib/db/db-utils";
 
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
@@ -77,7 +81,7 @@ export default {
           providerEventId = `evt_${nodeCrypto.createHash("sha256").update(`${eventType}_${rawBody}`).digest("hex").slice(0, 24)}`;
         }
 
-        // 1. Atomic claim of event for processing (Allowed states: RECEIVED, FAILED_RETRYABLE)
+        // 1. Atomic claim of event for processing (Allowed states: RECEIVED, FAILED_RETRYABLE, or stale PROCESSING lease)
         let claimed = false;
         let currentStatus = "RECEIVED";
 
@@ -88,48 +92,29 @@ export default {
             p_raw_payload: payload,
           });
 
-          if (!rpcError && Array.isArray(claimData) && claimData.length > 0) {
+          if (rpcError) {
+            console.error("[Webhook Claim RPC Error]:", rpcError);
+            return new Response(JSON.stringify({ error: "Webhook processing unavailable" }), {
+              status: 500,
+              headers: { "content-type": "application/json" },
+            });
+          }
+
+          if (Array.isArray(claimData) && claimData.length > 0) {
             claimed = claimData[0].claimed;
             currentStatus = claimData[0].current_status;
           } else {
-            // PostgREST fallback if RPC is not populated
-            await supabase.from("webhook_events").upsert(
-              {
-                provider_event_id: providerEventId,
-                event_type: eventType,
-                signature_valid: true,
-                raw_payload: payload,
-                processing_status: "RECEIVED",
-              },
-              { onConflict: "provider_event_id", ignoreDuplicates: true },
-            );
-
-            const { data: claimedRow } = await supabase
-              .from("webhook_events")
-              .update({
-                processing_status: "PROCESSING",
-                processing_started_at: new Date().toISOString(),
-              })
-              .eq("provider_event_id", providerEventId)
-              .in("processing_status", ["RECEIVED", "FAILED_RETRYABLE"])
-              .select("id, processing_status")
-              .maybeSingle();
-
-            if (claimedRow) {
-              claimed = true;
-              currentStatus = "PROCESSING";
-            } else {
-              const { data: existingRow } = await supabase
-                .from("webhook_events")
-                .select("processing_status")
-                .eq("provider_event_id", providerEventId)
-                .maybeSingle();
-              claimed = false;
-              currentStatus = existingRow?.processing_status || "PROCESSING";
-            }
+            return new Response(JSON.stringify({ error: "Webhook processing unavailable" }), {
+              status: 500,
+              headers: { "content-type": "application/json" },
+            });
           }
-        } catch {
-          claimed = false;
+        } catch (claimEx) {
+          console.error("[Webhook Claim Exception]:", claimEx);
+          return new Response(JSON.stringify({ error: "Webhook processing unavailable" }), {
+            status: 500,
+            headers: { "content-type": "application/json" },
+          });
         }
 
         if (!claimed) {
@@ -139,8 +124,14 @@ export default {
               headers: { "content-type": "application/json" },
             });
           }
-          return new Response(JSON.stringify({ status: "concurrent_processing", eventType }), {
-            status: 200,
+          if (currentStatus === "PROCESSING") {
+            return new Response(JSON.stringify({ status: "concurrent_processing", eventType }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          }
+          return new Response(JSON.stringify({ error: "Webhook processing unavailable" }), {
+            status: 500,
             headers: { "content-type": "application/json" },
           });
         }
@@ -166,28 +157,37 @@ export default {
             const paymentId = paymentEntity?.id;
 
             if (paymentLinkId) {
-              // Atomic claim on recovery action: exactly one success event resumes workflow
-              const { data: claimedAction } = await supabase
+              // P0-6: Separate provider event acceptance from retryable workflow application
+              const { data: actionRow } = await supabase
                 .from("recovery_actions")
-                .update({
-                  accepted_success_event_id: providerEventId,
-                  recovery_payment_id: paymentId,
-                  status: "PAID",
-                  updated_at: new Date().toISOString(),
-                })
+                .select("id, case_id, accepted_success_event_id, recovery_payment_id, status")
                 .eq("payment_link_id", paymentLinkId)
-                .is("accepted_success_event_id", null)
-                .select("case_id, payment_link_id")
                 .maybeSingle();
 
-              if (claimedAction?.case_id) {
-                await resumeWorkflowWithPaymentEvent(claimedAction.case_id, {
-                  kind: "RECOVERY_PAYMENT_CAPTURED",
-                  eventType,
-                  paymentId: paymentId || "unknown",
+              if (actionRow?.case_id) {
+                if (!actionRow.accepted_success_event_id) {
+                  const updateRes = await supabase
+                    .from("recovery_actions")
+                    .update({
+                      accepted_success_event_id: providerEventId,
+                      recovery_payment_id: paymentId,
+                      status: "PAID",
+                      updated_at: new Date().toISOString(),
+                    })
+                    .eq("id", actionRow.id);
+                  requireDbMutation(
+                    updateRes,
+                    "update recovery_actions to PAID on success webhook",
+                  );
+                }
+
+                await ensureRecoveryPaymentEventApplied({
+                  caseId: actionRow.case_id,
                   paymentLinkId,
+                  paymentId: paymentId || "unknown",
                   amountMinor: paymentEntity?.amount || 0,
                   providerEventId,
+                  eventType,
                 });
               }
             } else if (eventType === "payment.captured" && paymentId) {
@@ -218,13 +218,14 @@ export default {
             const linkEntity = payload.payload?.payment_link?.entity;
             const paymentLinkId = linkEntity?.id;
             if (paymentLinkId) {
-              await supabase
+              const cancelRes = await supabase
                 .from("recovery_actions")
                 .update({
                   status: "CANCELLED",
                   updated_at: new Date().toISOString(),
                 })
                 .eq("payment_link_id", paymentLinkId);
+              requireDbMutation(cancelRes, "update recovery_actions to CANCELLED");
             }
           }
 
@@ -232,18 +233,19 @@ export default {
             const orderEntity = payload.payload?.order?.entity;
             const orderId = orderEntity?.id;
             if (orderId) {
-              await supabase
+              const orderUpdateRes = await supabase
                 .from("test_payment_sessions")
                 .update({
                   status: "PAID",
                   updated_at: new Date().toISOString(),
                 })
                 .eq("order_id", orderId);
+              requireDbMutation(orderUpdateRes, "update test_payment_sessions to PAID");
             }
           }
 
-          // 3. Mark PROCESSED on successful completion
-          await supabase
+          // 3. Mark PROCESSED on successful completion - P0-5: verify write
+          const { error: markError } = await supabase
             .from("webhook_events")
             .update({
               processing_status: "PROCESSED",
@@ -251,6 +253,17 @@ export default {
               last_error: null,
             })
             .eq("provider_event_id", providerEventId);
+
+          if (markError) {
+            console.error(
+              `[Webhook Ingestion] Failed to mark event ${providerEventId} as PROCESSED:`,
+              markError,
+            );
+            return new Response(JSON.stringify({ error: "Failed to mark webhook as processed" }), {
+              status: 500,
+              headers: { "content-type": "application/json" },
+            });
+          }
 
           return new Response(JSON.stringify({ status: "processed", eventType }), {
             status: 200,

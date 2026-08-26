@@ -67,7 +67,7 @@ async function ingestKnowledge() {
             metadata: chunk.metadata,
             embedding: vector,
           },
-          { onConflict: "document_id,chunk_index" }
+          { onConflict: "document_id,chunk_index" },
         );
 
         if (chunkError) {

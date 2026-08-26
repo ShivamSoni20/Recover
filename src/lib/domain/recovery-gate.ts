@@ -371,3 +371,25 @@ export function computeCanonicalStateHash(params: {
   };
   return crypto.createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
 }
+
+/**
+ * Convenience helper to compute canonical state hash from raw or canonical provider entities.
+ */
+export function generateCanonicalStateHash(payment: any, order?: any, payments?: any[]): string {
+  return computeCanonicalStateHash({
+    paymentId: payment?.id || "",
+    paymentStatus: payment?.status || "",
+    paymentCaptured: Boolean(payment?.captured || payment?.status === "captured"),
+    paymentAmountMinor: payment?.amount ?? payment?.amountMinor ?? 0,
+    paymentCurrency: payment?.currency || "INR",
+    orderId: order?.id || null,
+    orderStatus: order?.status || null,
+    orderAmountPaidMinor: order?.amount_paid ?? order?.amountPaidMinor ?? 0,
+    orderAmountDueMinor: order?.amount_due ?? order?.amountDueMinor ?? 0,
+    siblingPayments: (payments || []).map((p: any) => ({
+      id: p.id,
+      captured: Boolean(p.captured || p.status === "captured"),
+      amountMinor: p.amount ?? p.amountMinor ?? 0,
+    })),
+  });
+}

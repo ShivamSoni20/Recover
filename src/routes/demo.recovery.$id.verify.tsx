@@ -134,7 +134,16 @@ function VerifyRecovery() {
         </p>
       </div>
 
-      <VerificationProgress checks={displayChecks} completed={done ? displayChecks.length : 2} />
+      <VerificationProgress
+        checks={displayChecks}
+        completed={
+          done
+            ? displayChecks.length
+            : receipt
+              ? displayChecks.filter((c) => c.result !== "Pending" && c.result !== "Waiting").length
+              : 0
+        }
+      />
 
       <Panel className="mt-4 bg-brand-softer">
         <p className="text-xs leading-6 text-foreground">

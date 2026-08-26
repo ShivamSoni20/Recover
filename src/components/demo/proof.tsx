@@ -147,7 +147,7 @@ export function VerificationReceipt({
 
 export function ProofStrip({
   originalStatus = "FAILED",
-  recoveryStrategy = "FRESH_CHECKOUT",
+  recoveryStrategy,
   recoveryPaymentStatus = "CAPTURED",
   verificationStatus = "VERIFIED",
   className = "",
@@ -160,7 +160,7 @@ export function ProofStrip({
 }) {
   const items: [string, string][] = [
     ["Original payment", originalStatus],
-    ["Recovery action", recoveryStrategy],
+    ["Recovery action", recoveryStrategy || "—"],
     ["Recovery payment", recoveryPaymentStatus],
     ["Independent verification", verificationStatus],
   ];
@@ -225,7 +225,7 @@ export function DemoCaseRow({ demoCase }: { demoCase: any }) {
         />
         <Cell
           label="Strategy"
-          value={<span className="text-xs font-semibold">FRESH_CHECKOUT</span>}
+          value={<span className="text-xs font-semibold">{demoCase.recoveryStrategy || demoCase.strategy || "—"}</span>}
         />
         <Cell
           label="Outcome"

@@ -1,6 +1,10 @@
 import dotenv from "dotenv";
 import { createRazorpayOrder, fetchRazorpayOrder } from "../src/lib/razorpay/orders";
-import { createRecoveryPaymentLink, fetchPaymentLink, cancelPaymentLink } from "../src/lib/razorpay/payment-links";
+import {
+  createRecoveryPaymentLink,
+  fetchPaymentLink,
+  cancelPaymentLink,
+} from "../src/lib/razorpay/payment-links";
 
 dotenv.config();
 
@@ -8,7 +12,9 @@ async function runRazorpaySmoke() {
   console.log("=== Razorpay Test Mode Smoke Test ===");
 
   if (process.env.RUN_RAZORPAY_INTEGRATION_TESTS !== "true") {
-    console.log("Skipping live Razorpay API calls. Set RUN_RAZORPAY_INTEGRATION_TESTS=true to execute.");
+    console.log(
+      "Skipping live Razorpay API calls. Set RUN_RAZORPAY_INTEGRATION_TESTS=true to execute.",
+    );
     return;
   }
 

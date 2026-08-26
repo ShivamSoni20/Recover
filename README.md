@@ -20,39 +20,39 @@
 
 ```
 Real Razorpay Test payment
-        ↓
+        │
 PAYMENT FAILED
-        ↓
+        │
 Signed Razorpay Webhook (HMAC SHA-256 validated against raw body)
-        ↓
+        │
 Canonical Razorpay Payment Fetch (GET /v1/payments/:id)
-        ↓
+        │
 Supabase Database Persistence (recovery_cases, webhook_events)
-        ↓
+        │
 LangGraph Workflow Execution (Durable thread per recovery case with PostgresSaver)
-        ↓
+        │
 RAG-supported Context Retrieval (pgvector + OpenRouter Embeddings)
-        ↓
+        │
 LangChain + OpenRouter Diagnosis (Structured JSON via Zod)
-        ↓
+        │
 DETERMINISTIC Recovery Gate (Strict policy bounds, no LLM financial authority)
-        ↓
+        │
 Human Approval Interrupt (await_approval)
-        ↓
-Canonical Pre-Action Revalidation (Re-fetch original payment/order state)
-        ↓
+        │
+Canonical Pre-Action Revalidation (Re-fetch original payment/order state, hash & expiry check)
+        │
 Real Razorpay Payment Link Created (POST /v1/payment_links with idempotent reference_id)
-        ↓
+        │
 Customer Pays Successfully on Hosted Razorpay Link
-        ↓
+        │
 Real paid/captured Webhook Arrives
-        ↓
-LangGraph Resumes Workflow
-        ↓
-Independent Razorpay Re-fetch & Comparison (Expected vs Observed)
-        ↓
+        │
+LangGraph Resumes Workflow on Same Thread
+        │
+Independent Razorpay Re-fetch & Comparison (Expected vs Observed, Relationship check)
+        │
 Verification Receipt Persisted
-        ↓
+        │
 RECOVERED — VERIFIED
 ```
 
@@ -79,51 +79,18 @@ RECOVERED — VERIFIED
 
 ---
 
-## Environment Variables Setup
+## Database Migrations & Schema
 
-Create a `.env` file from `.env.example`:
+The database schema is managed via tracked migrations in `supabase/migrations/`:
 
-```bash
-cp .env.example .env
-```
+1. **`00001_initial_schema.sql`**: Core domain tables (`test_payment_sessions`, `recovery_cases`, `case_events`, `webhook_events`, `action_authorizations`, `recovery_actions`, `verification_receipts`, `knowledge_documents`, `knowledge_chunks`, pgvector extensions and indices).
+2. **`00002_hardening.sql`**: Idempotency indices, foreign key cascades, and check constraints.
+3. **`00003_runtime_integrity.sql`**: Runtime audit tables and deterministic state tracking.
+4. **`00004_backend_integrity.sql`**: RLS security cleanup, durable session invariants, and partial unique constraints.
+5. **`00005_webhook_claim_rpc.sql`**: Atomic webhook event claim RPC.
+6. **`00006_final_runtime_correctness.sql`**: Leased webhook claim recovery (> 2 min lease), service_role security hardening, `verification_receipts.action_id`, and `recovery_actions.workflow_event_applied_at`.
 
-Fill in the required credentials:
-
-```ini
-# Application Base URL
-APP_BASE_URL=http://localhost:3000
-
-# OpenRouter AI Configuration
-OPENROUTER_API_KEY=your_openrouter_api_key
-OPENROUTER_MODEL=openai/gpt-4o-mini
-OPENROUTER_EMBEDDING_MODEL=openai/text-embedding-3-small
-OPENROUTER_APP_TITLE=Recover
-
-# Supabase & PostgreSQL (Domain DB + pgvector + Checkpoints)
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_ANON_KEY=your_anon_key
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-DATABASE_URL=postgresql://postgres:[PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres
-
-# Razorpay Test Mode
-RECOVER_RAZORPAY_MODE=test
-RAZORPAY_KEY_ID=rzp_test_your_key_id
-RAZORPAY_KEY_SECRET=your_key_secret
-RAZORPAY_WEBHOOK_SECRET=your_webhook_secret
-```
-
----
-
-## Database Migrations
-
-Run the SQL migration in `supabase/migrations/00001_initial_schema.sql` on your Supabase project (via Supabase SQL Editor or Supabase CLI):
-
-```bash
-# Contains:
-# - vector & uuid-ossp extensions
-# - recovery_cases, webhook_events, action_authorizations, verification_receipts
-# - LangGraph checkpoint tables & RLS policies
-```
+*Note: LangGraph durable checkpoint tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`) are auto-initialized via `PostgresSaver.setup()`.*
 
 ---
 
@@ -145,13 +112,13 @@ bun run dev
 ## Manual End-to-End Test Mode Walkthrough
 
 1. Open `/demo/create` in your browser.
-2. Enter an amount (e.g. `₹7,350`) and customer details.
-3. Click **Create ₹7,350 Test Payment** → A real Razorpay Order (`order_xxx`) is created.
+2. Enter an amount (e.g. `₹500`) and customer details.
+3. Click **Create Test Payment** → A real Razorpay Order (`order_xxx`) and durable session are created.
 4. Click **Open Test Checkout** → Standard Razorpay Test Checkout opens.
-5. In the Razorpay modal, select a failure option (or close to simulate failure).
-6. Razorpay sends the signed `payment.failed` webhook to `/api/webhooks/razorpay`.
+5. In the Razorpay modal, attempt a test transaction and select a deliberate Failure response.
+6. Razorpay sends the signed `payment.failed` webhook to `/api/webhooks/razorpay` (or canonical reconciliation triggers).
 7. Recover verifies the HMAC signature, fetches canonical state, creates a `recovery_case`, and launches the LangGraph workflow.
 8. Open `/demo/payment/:id` → See real OpenRouter diagnosis, RAG knowledge references, and the deterministic Recovery Gate authorization.
-9. Click **Recover ₹7,350** → Rechecks original payment status and creates a real Razorpay Payment Link (`plink_xxx`).
-10. Click **Open Recovery Checkout** → Complete the payment on the hosted link.
-11. Razorpay sends `payment_link.paid` → LangGraph resumes, runs canonical verification, persists an independent verification receipt, and displays **RECOVERED — VERIFIED**.
+9. Click **Recover** → Rechecks original payment status, state hash, and creates a real Razorpay Payment Link (`plink_xxx`).
+10. Click **Open Hosted Recovery Checkout** → Complete the payment on the hosted Razorpay link.
+11. Razorpay sends `payment_link.paid` → LangGraph resumes on the same thread, executes independent canonical verification, persists a schema-compliant verification receipt, and displays **RECOVERED — VERIFIED**.

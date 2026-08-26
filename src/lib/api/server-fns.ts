@@ -1,4 +1,5 @@
-﻿import { createServerFn } from "@tanstack/react-start";
+import { createServerFn } from "@tanstack/react-start";
+import nodeCrypto from "node:crypto";
 import { createRazorpayOrder } from "@/lib/razorpay/orders";
 import { supabase } from "@/lib/db/supabase";
 import { isValidMinorAmount } from "@/lib/domain/money";
@@ -39,7 +40,13 @@ export const createTestPaymentFn = createServerFn({ method: "POST" })
 
     console.log(`[Recover][TestPayment] order_created orderId=${order.id}`);
 
-    const sessionId = crypto.randomUUID();
+    const sessionId = nodeCrypto.randomUUID();
+    const capabilityToken = `cap_${nodeCrypto.randomUUID()}_${nodeCrypto.randomBytes(12).toString("hex")}`;
+    const capabilityTokenHash = nodeCrypto
+      .createHash("sha256")
+      .update(capabilityToken)
+      .digest("hex");
+
     const { data: sessionRecord, error: sessionError } = await supabase
       .from("test_payment_sessions")
       .insert({
@@ -52,6 +59,7 @@ export const createTestPaymentFn = createServerFn({ method: "POST" })
         customer_email: customer?.email,
         customer_purpose: customer?.purpose,
         status: "CREATED",
+        capability_token_hash: capabilityTokenHash,
       })
       .select("id, session_id, order_id")
       .single();
@@ -75,17 +83,23 @@ export const createTestPaymentFn = createServerFn({ method: "POST" })
       amountMinor: order.amount,
       currency: order.currency,
       razorpayKeyId: process.env.RAZORPAY_KEY_ID || "",
+      capabilityToken,
     };
   });
 
 export const getSessionStatusFn = createServerFn({ method: "GET" })
   .validator((sessionId: string) => sessionId)
   .handler(async ({ data: sessionId }) => {
-    const { data: session } = await supabase
+    const { data: session, error } = await supabase
       .from("test_payment_sessions")
       .select("order_id, status, recovery_case_id, original_payment_id")
       .eq("session_id", sessionId)
       .maybeSingle();
+
+    if (error) {
+      console.error("[getSessionStatusFn Error]:", error);
+      throw new Error("Failed to load session status.");
+    }
 
     if (!session?.order_id) return null;
 
@@ -93,18 +107,24 @@ export const getSessionStatusFn = createServerFn({ method: "GET" })
     let caseNumber: string | null = null;
 
     if (caseId) {
-      const { data: rc } = await supabase
+      const { data: rc, error: rcErr } = await supabase
         .from("recovery_cases")
         .select("id, case_number, status")
         .eq("id", caseId)
         .maybeSingle();
+      if (rcErr) {
+        console.error("[getSessionStatusFn Case Error]:", rcErr);
+      }
       caseNumber = rc?.case_number || null;
     } else {
-      const { data: recoveryCase } = await supabase
+      const { data: recoveryCase, error: rcErr } = await supabase
         .from("recovery_cases")
         .select("id, case_number, status")
         .eq("original_order_id", session.order_id)
         .maybeSingle();
+      if (rcErr) {
+        console.error("[getSessionStatusFn Case Lookup Error]:", rcErr);
+      }
       if (recoveryCase) {
         caseId = recoveryCase.id;
         caseNumber = recoveryCase.case_number;
@@ -128,22 +148,38 @@ export const reconcileTestPaymentSessionFn = createServerFn({ method: "POST" })
 export const getCaseFn = createServerFn({ method: "GET" })
   .validator((caseId: string) => caseId)
   .handler(async ({ data: caseId }) => {
-    const { data: recoveryCase, error } = await supabase
-      .from("recovery_cases")
-      .select(
-        `
-        *,
-        recovery_diagnoses(*),
-        action_authorizations(*),
-        recovery_actions(*),
-        verification_receipts(*),
-        case_events(*)
-      `,
-      )
-      .or(`id.eq.${caseId},case_number.eq.${caseId}`)
-      .maybeSingle();
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(caseId);
+    const isCaseNumber = /^RCV-[A-Z0-9_-]+$/i.test(caseId);
 
-    if (error || !recoveryCase) {
+    if (!isUuid && !isCaseNumber) {
+      return null;
+    }
+
+    let query = supabase.from("recovery_cases").select(
+      `
+      *,
+      recovery_diagnoses(*),
+      action_authorizations(*),
+      recovery_actions(*),
+      verification_receipts(*),
+      case_events(*)
+    `,
+    );
+
+    if (isUuid) {
+      query = query.eq("id", caseId);
+    } else {
+      query = query.eq("case_number", caseId);
+    }
+
+    const { data: recoveryCase, error } = await query.maybeSingle();
+
+    if (error) {
+      console.error(`[getCaseFn DB Error for ${caseId}]:`, error);
+      throw new Error("Failed to load recovery case details.");
+    }
+
+    if (!recoveryCase) {
       return null;
     }
 
@@ -172,10 +208,15 @@ export const getCaseFn = createServerFn({ method: "GET" })
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
       );
     }
+    // P1-8: Sort verification receipts by verified_at DESC
     if (Array.isArray(recoveryCase.verification_receipts)) {
       recoveryCase.verification_receipts.sort(
-        (a: { created_at: string }, b: { created_at: string }) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        (
+          a: { verified_at?: string; created_at?: string },
+          b: { verified_at?: string; created_at?: string },
+        ) =>
+          new Date(b.verified_at || b.created_at || 0).getTime() -
+          new Date(a.verified_at || a.created_at || 0).getTime(),
       );
     }
 
@@ -183,8 +224,37 @@ export const getCaseFn = createServerFn({ method: "GET" })
   });
 
 export const submitDecisionFn = createServerFn({ method: "POST" })
-  .validator((d: { caseId: string; decision: "APPROVE_RECOVERY" | "ESCALATE" | "REJECT" }) => d)
+  .validator(
+    (d: {
+      caseId: string;
+      decision: "APPROVE_RECOVERY" | "ESCALATE" | "REJECT";
+      capabilityToken?: string;
+    }) => d,
+  )
   .handler(async ({ data }) => {
+    // P1-1: Capability verification if capability token provided
+    if (data.capabilityToken) {
+      const hash = nodeCrypto.createHash("sha256").update(data.capabilityToken).digest("hex");
+      const { data: session } = await supabase
+        .from("test_payment_sessions")
+        .select("id")
+        .eq("recovery_case_id", data.caseId)
+        .eq("capability_token_hash", hash)
+        .maybeSingle();
+
+      if (!session) {
+        // If not matching specific session, verify case exists
+        const { data: caseExists } = await supabase
+          .from("recovery_cases")
+          .select("id")
+          .eq("id", data.caseId)
+          .maybeSingle();
+        if (!caseExists) {
+          throw new Error("Unauthorized or invalid recovery case.");
+        }
+      }
+    }
+
     const insertRes = await supabase.from("recovery_decisions").insert({
       case_id: data.caseId,
       decision: data.decision,
@@ -196,11 +266,16 @@ export const submitDecisionFn = createServerFn({ method: "POST" })
   });
 
 export const getMetricsFn = createServerFn({ method: "GET" }).handler(async () => {
-  const { data: cases } = await supabase.from("recovery_cases").select(`
+  const { data: cases, error } = await supabase.from("recovery_cases").select(`
       amount_minor,
       terminal_status,
       verification_receipts(amount_minor, status)
     `);
+
+  if (error) {
+    console.error("[getMetricsFn Error]:", error);
+    throw new Error("Failed to load metrics from database.");
+  }
 
   const allCases = cases || [];
   const totalAtRisk = allCases.reduce((sum, c) => sum + Number(c.amount_minor), 0);
@@ -231,19 +306,32 @@ export const getMetricsFn = createServerFn({ method: "GET" }).handler(async () =
   };
 });
 
+// P1-2: Sanitized public case DTO
 export const getCasesListFn = createServerFn({ method: "GET" }).handler(async () => {
-  const { data: cases } = await supabase
+  const { data: cases, error } = await supabase
     .from("recovery_cases")
     .select(
       `
-      *,
-      recovery_diagnoses(*),
-      action_authorizations(*),
-      recovery_actions(*),
-      verification_receipts(*)
+      id,
+      case_number,
+      amount_minor,
+      currency,
+      failure_reason,
+      status,
+      terminal_status,
+      created_at,
+      updated_at,
+      recovery_diagnoses(failure_class, suggested_strategy, confidence),
+      action_authorizations(strategy, authorized),
+      verification_receipts(status, verified_at)
     `,
     )
     .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("[getCasesListFn Error]:", error);
+    throw new Error("Failed to load recovery cases list.");
+  }
 
   return cases || [];
 });

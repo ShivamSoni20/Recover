@@ -14,10 +14,13 @@ export function getPgPool(): pg.Pool {
         "DATABASE_URL environment variable is required for PostgreSQL connection pool.",
       );
     }
+    // Serverless-optimized connection pool: 2 connections per instance with 10s idle timeout
     pool = new pg.Pool({
       connectionString,
       ssl: connectionString.includes("localhost") ? false : { rejectUnauthorized: false },
-      max: 10,
+      max: Number(process.env.PG_POOL_MAX || 2),
+      idleTimeoutMillis: 10000,
+      connectionTimeoutMillis: 5000,
     });
   }
   return pool;

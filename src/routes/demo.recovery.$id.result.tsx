@@ -115,7 +115,7 @@ function RecoveryResult() {
 
       <ProofStrip
         originalStatus="FAILED"
-        recoveryStrategy={authorization?.strategy || "FRESH_CHECKOUT"}
+        recoveryStrategy={authorization?.strategy || "—"}
         recoveryPaymentStatus="CAPTURED"
         verificationStatus="VERIFIED"
         className="mt-8"

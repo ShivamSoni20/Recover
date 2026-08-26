@@ -36,7 +36,7 @@ Error Reason: payment_failed
 Error Source: customer
 Error Step: payment_authentication
 Error Description: Bank server timed out during MPIN validation.
-`
+`,
   );
 
   console.log(`✓ Structured Diagnosis Generated:`);
@@ -49,7 +49,7 @@ Error Description: Bank server timed out during MPIN validation.
   const structuredProp = model.withStructuredOutput(ProposalOutputSchema);
 
   const propResult = await structuredProp.invoke(
-    `Propose safe recovery for failure class '${diagResult.failureClass}' and summary '${diagResult.summary}'. Allowed strategies: FRESH_CHECKOUT, WAIT_FOR_CANONICAL_UPDATE, MANUAL_REVIEW, STOP_ALREADY_PAID.`
+    `Propose safe recovery for failure class '${diagResult.failureClass}' and summary '${diagResult.summary}'. Allowed strategies: FRESH_CHECKOUT, WAIT_FOR_CANONICAL_UPDATE, MANUAL_REVIEW, STOP_ALREADY_PAID.`,
   );
 
   console.log(`✓ Structured Proposal Generated:`);

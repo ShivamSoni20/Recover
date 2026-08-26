@@ -1,4 +1,4 @@
-﻿import { razorpayRequest } from "./client";
+import { razorpayRequest } from "./client";
 
 export interface RazorpayPaymentLinkResponse {
   id: string;
@@ -35,6 +35,11 @@ export interface RazorpayPaymentLinkListResponse {
   count: number;
   items: RazorpayPaymentLinkResponse[];
 }
+
+export type PaymentLinkSearchResult =
+  | { status: "FOUND"; link: RazorpayPaymentLinkResponse }
+  | { status: "NOT_FOUND" }
+  | { status: "PROVIDER_UNAVAILABLE"; errorCode?: string; error?: string };
 
 export async function createRecoveryPaymentLink(params: {
   amountMinor: number;
@@ -101,12 +106,19 @@ export async function fetchPaymentLinks(options?: {
 
 export async function findPaymentLinkByReferenceId(
   referenceId: string,
-): Promise<RazorpayPaymentLinkResponse | null> {
+): Promise<PaymentLinkSearchResult> {
   try {
     const items = await fetchPaymentLinks({ referenceId, limit: 10 });
     const match = items.find((link) => link.reference_id === referenceId);
-    return match || null;
-  } catch {
-    return null;
+    if (match) {
+      return { status: "FOUND", link: match };
+    }
+    return { status: "NOT_FOUND" };
+  } catch (err: any) {
+    return {
+      status: "PROVIDER_UNAVAILABLE",
+      errorCode: err?.code || "NETWORK_ERROR",
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
