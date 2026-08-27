@@ -127,18 +127,14 @@ export async function ensureRecoveryPaymentEventApplied(params: {
     return;
   }
 
-  const { data: actionRow } = await supabase
+  // Update recovery_actions with new recovery payment ID
+  await supabase
     .from("recovery_actions")
-    .select("workflow_event_applied_at")
-    .eq("case_id", params.caseId)
-    .maybeSingle();
-
-  if (actionRow?.workflow_event_applied_at) {
-    console.log(
-      `[Runner] Recovery event already durably applied for case ${params.caseId}; skipping.`,
-    );
-    return;
-  }
+    .update({
+      recovery_payment_id: params.paymentId,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("case_id", params.caseId);
 
   // Resume LangGraph workflow on the thread
   await resumeWorkflowWithPaymentEvent(params.caseId, {

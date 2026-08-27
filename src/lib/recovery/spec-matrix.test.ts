@@ -410,7 +410,7 @@ describe("Recover Specification Matrix & Runtime Correctness (Tests 1 - 24)", ()
     };
 
     const res = await reconcileLinkCreationNode(state);
-    expect(res.action?.status).toBe("NOT_CREATED");
+    expect(res.action?.status).toBe("NOT_STARTED");
     expect(res.action?.referenceId).toBe("rcv_case_1");
   });
 

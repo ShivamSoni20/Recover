@@ -11,7 +11,12 @@ export function getServerSupabase(): SupabaseClient {
   }
 
   const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const serviceRoleKey =
+    process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    !process.env.SUPABASE_SERVICE_ROLE_KEY.includes("your_supabase") &&
+    !process.env.SUPABASE_SERVICE_ROLE_KEY.includes("placeholder")
+      ? process.env.SUPABASE_SERVICE_ROLE_KEY
+      : process.env.SUPABASE_ANON_KEY;
 
   if (!supabaseUrl || !serviceRoleKey) {
     if (process.env.NODE_ENV === "test") {

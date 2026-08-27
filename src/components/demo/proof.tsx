@@ -225,7 +225,11 @@ export function DemoCaseRow({ demoCase }: { demoCase: any }) {
         />
         <Cell
           label="Strategy"
-          value={<span className="text-xs font-semibold">{demoCase.recoveryStrategy || demoCase.strategy || "—"}</span>}
+          value={
+            <span className="text-xs font-semibold">
+              {demoCase.recoveryStrategy || demoCase.strategy || "—"}
+            </span>
+          }
         />
         <Cell
           label="Outcome"

@@ -16,8 +16,10 @@ export function getRecoverModel(options: { temperature?: number } = {}): ChatOpe
   return new ChatOpenAI({
     modelName,
     temperature: options.temperature ?? 0,
+    apiKey,
     openAIApiKey: apiKey,
     configuration: {
+      apiKey,
       baseURL: "https://openrouter.ai/api/v1",
       defaultHeaders: {
         "HTTP-Referer": appUrl,

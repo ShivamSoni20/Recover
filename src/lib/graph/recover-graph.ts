@@ -256,11 +256,10 @@ Determine:
   const diagRes = await supabase.from("recovery_diagnoses").insert({
     case_id: state.caseId,
     failure_class: diagnosis.failureClass,
-    root_cause: diagnosis.summary,
     confidence: diagnosis.confidence,
-    suggested_strategy: "FRESH_CHECKOUT",
-    explanation: diagnosis.summary,
-    knowledge_sources: diagnosis.knowledgeRefs,
+    evidence_fields: diagnosis.evidenceFields,
+    knowledge_refs: diagnosis.knowledgeRefs,
+    summary: diagnosis.summary,
   });
   requireDbMutation(diagRes, "insert recovery_diagnoses");
 
@@ -352,16 +351,11 @@ export async function recoveryGateNode(state: RecoverState): Promise<Partial<Rec
     },
   });
 
-  const canonicalStateHash = computeCanonicalStateHash({
-    paymentId: canonicalPayment.id,
-    paymentStatus: canonicalPayment.status,
-    paymentCaptured: canonicalPayment.captured,
-    paymentAmountMinor: canonicalPayment.amountMinor,
-    paymentCurrency: canonicalPayment.currency,
-    orderId: canonicalOrder?.id,
-    orderStatus: canonicalOrder?.status,
-    siblingPayments: orderPayments,
-  });
+  const canonicalStateHash = generateCanonicalStateHash(
+    canonicalPayment,
+    canonicalOrder,
+    orderPayments,
+  );
 
   const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 mins
 
@@ -377,14 +371,15 @@ export async function recoveryGateNode(state: RecoverState): Promise<Partial<Rec
   // Persist authorization decision
   const authRes = await supabase.from("action_authorizations").insert({
     case_id: state.caseId,
-    authorized: gateState.authorized,
+    policy_version_id: state.policyVersionId || "a491a14f-2dda-402b-bdbe-b8c99d6db853",
     strategy: proposedStrategy,
-    denial_reason: gateState.authorized ? null : gateState.reasonCodes.join("; "),
     exact_amount_minor: gateState.exactAmountMinor,
     currency: gateState.currency,
     canonical_state_hash: canonicalStateHash,
-    policy_version: "v1.0.0",
-    checks_passed: gateState.gateChecks,
+    authorized: gateState.authorized,
+    requires_approval: gateState.requiresApproval,
+    reason_codes: gateState.reasonCodes,
+    gate_checks: gateState.gateChecks,
     expires_at: expiresAt,
   });
   requireDbMutation(authRes, "insert action_authorizations");
@@ -474,8 +469,7 @@ export async function processApprovalDecisionNode(
   const decRes = await supabase.from("recovery_decisions").insert({
     case_id: state.caseId,
     decision: approval.status,
-    decided_by: approval.decisionBy || "merchant_operator",
-    decided_at: new Date().toISOString(),
+    actor: approval.decisionBy || "merchant_operator",
   });
   requireDbMutation(decRes, "insert recovery_decisions");
 
