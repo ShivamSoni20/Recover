@@ -296,6 +296,15 @@ describe("Webhook Ingestion, Atomic Claim & Concurrency (server.ts)", () => {
     const resumeSpy = vi
       .spyOn(runnerMod, "ensureRecoveryPaymentEventApplied")
       .mockResolvedValue(undefined);
+    vi.spyOn(runnerMod, "claimRecoverySuccessEvent").mockResolvedValue({
+      claimed: true,
+      isOwner: true,
+      actionId: "act_123",
+      caseId: "case-success-123",
+      acceptedEventId: "evt_succ_retryable",
+      workflowAppliedAt: null,
+      recoveryPaymentId: "pay_recovery_1",
+    });
 
     vi.spyOn(supabase as any, "rpc").mockResolvedValue({
       data: [{ claimed: true, current_status: "PROCESSING", attempt_count: 1 }],
@@ -343,10 +352,170 @@ describe("Webhook Ingestion, Atomic Claim & Concurrency (server.ts)", () => {
     expect(resumeSpy).toHaveBeenCalledTimes(1);
     expect(resumeSpy).toHaveBeenCalledWith(
       expect.objectContaining({
+        actionId: "act_123",
         caseId: "case-success-123",
         paymentLinkId: "plink_123",
         paymentId: "pay_recovery_1",
       }),
     );
+  });
+
+  it("8. Competing success events accept exactly one owner and only it resumes LangGraph", async () => {
+    let acceptedEvent: string | null = null;
+    vi.spyOn(runnerMod, "claimRecoverySuccessEvent").mockImplementation(async (params) => {
+      if (!acceptedEvent) acceptedEvent = params.providerEventId;
+      return {
+        claimed: acceptedEvent === params.providerEventId,
+        isOwner: acceptedEvent === params.providerEventId,
+        actionId: "act_race",
+        caseId: "case_race",
+        acceptedEventId: acceptedEvent,
+        workflowAppliedAt: null,
+        recoveryPaymentId: "pay_race",
+      };
+    });
+    const applySpy = vi
+      .spyOn(runnerMod, "ensureRecoveryPaymentEventApplied")
+      .mockResolvedValue(undefined);
+    vi.spyOn(supabase as any, "rpc").mockResolvedValue({
+      data: [{ claimed: true, current_status: "PROCESSING", attempt_count: 1 }],
+      error: null,
+    });
+    vi.spyOn(supabase as any, "from").mockImplementation((...args: any[]) => {
+      const table = args[0];
+      if (table === "recovery_actions") {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              maybeSingle: vi.fn().mockResolvedValue({
+                data: { id: "act_race", case_id: "case_race" },
+                error: null,
+              }),
+            }),
+          }),
+        } as any;
+      }
+      return {
+        update: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) }),
+      } as any;
+    });
+    const payload = {
+      event: "payment_link.paid",
+      payload: {
+        payment_link: { entity: { id: "plink_race" } },
+        payment: { entity: { id: "pay_race", amount: 50000 } },
+      },
+    };
+    const [first, second] = await Promise.all([
+      server.fetch(createSignedRequest(payload, "evt_link_paid"), {}, {}),
+      server.fetch(createSignedRequest(payload, "evt_payment_captured"), {}, {}),
+    ]);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(applySpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("9. Winning event retries after resume failure but stops after workflow application", async () => {
+    const claimSpy = vi.spyOn(runnerMod, "claimRecoverySuccessEvent").mockResolvedValue({
+      claimed: false,
+      isOwner: true,
+      actionId: "act_retry",
+      caseId: "case_retry",
+      acceptedEventId: "evt_retry_winner",
+      workflowAppliedAt: null,
+      recoveryPaymentId: "pay_retry",
+    });
+    const applySpy = vi
+      .spyOn(runnerMod, "ensureRecoveryPaymentEventApplied")
+      .mockRejectedValueOnce(new Error("checkpoint temporarily unavailable"))
+      .mockResolvedValueOnce(undefined);
+    vi.spyOn(supabase as any, "rpc").mockResolvedValue({
+      data: [{ claimed: true, current_status: "PROCESSING", attempt_count: 1 }],
+      error: null,
+    });
+    vi.spyOn(supabase as any, "from").mockImplementation((...args: any[]) => {
+      const table = args[0];
+      if (table === "recovery_actions") {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              maybeSingle: vi.fn().mockResolvedValue({
+                data: { id: "act_retry", case_id: "case_retry" },
+                error: null,
+              }),
+            }),
+          }),
+        } as any;
+      }
+      return {
+        update: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) }),
+      } as any;
+    });
+    const payload = {
+      event: "payment_link.paid",
+      payload: {
+        payment_link: { entity: { id: "plink_retry" } },
+        payment: { entity: { id: "pay_retry", amount: 50000 } },
+      },
+    };
+    expect(
+      (await server.fetch(createSignedRequest(payload, "evt_retry_winner"), {}, {})).status,
+    ).toBe(500);
+    expect(
+      (await server.fetch(createSignedRequest(payload, "evt_retry_winner"), {}, {})).status,
+    ).toBe(200);
+    expect(claimSpy).toHaveBeenCalledTimes(2);
+    expect(applySpy).toHaveBeenCalledTimes(2);
+
+    claimSpy.mockResolvedValueOnce({
+      claimed: false,
+      isOwner: true,
+      actionId: "act_retry",
+      caseId: "case_retry",
+      acceptedEventId: "evt_retry_winner",
+      workflowAppliedAt: new Date().toISOString(),
+      recoveryPaymentId: "pay_retry",
+    });
+    expect(
+      (await server.fetch(createSignedRequest(payload, "evt_retry_winner"), {}, {})).status,
+    ).toBe(200);
+    expect(applySpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("10. Atomic success claim database failure returns HTTP 500 for provider retry", async () => {
+    vi.spyOn(runnerMod, "claimRecoverySuccessEvent").mockRejectedValue(
+      new Error("atomic claim unavailable"),
+    );
+    vi.spyOn(supabase as any, "rpc").mockResolvedValue({
+      data: [{ claimed: true, current_status: "PROCESSING", attempt_count: 1 }],
+      error: null,
+    });
+    vi.spyOn(supabase as any, "from").mockImplementation((...args: any[]) => {
+      const table = args[0];
+      if (table === "recovery_actions") {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              maybeSingle: vi.fn().mockResolvedValue({
+                data: { id: "act_db_fail", case_id: "case_db_fail" },
+                error: null,
+              }),
+            }),
+          }),
+        } as any;
+      }
+      return {
+        update: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) }),
+      } as any;
+    });
+    const payload = {
+      event: "payment_link.paid",
+      payload: {
+        payment_link: { entity: { id: "plink_db_fail" } },
+        payment: { entity: { id: "pay_db_fail", amount: 50000 } },
+      },
+    };
+    const response = await server.fetch(createSignedRequest(payload, "evt_db_fail"), {}, {});
+    expect(response.status).toBe(500);
   });
 });

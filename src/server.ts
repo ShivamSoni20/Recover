@@ -50,6 +50,7 @@ import { supabase } from "./lib/db/supabase";
 import {
   resumeWorkflowWithPaymentEvent,
   ensureRecoveryPaymentEventApplied,
+  claimRecoverySuccessEvent,
 } from "./lib/graph/runner";
 import { processCanonicalFailedPayment } from "./lib/recovery/process-failed-payment";
 import { requireDbMutation } from "./lib/db/db-utils";
@@ -158,37 +159,33 @@ export default {
 
             if (paymentLinkId) {
               // P0-6: Separate provider event acceptance from retryable workflow application
-              const { data: actionRow } = await supabase
+              const { data: actionRow, error: actionLookupError } = await supabase
                 .from("recovery_actions")
-                .select("id, case_id, accepted_success_event_id, recovery_payment_id, status")
+                .select("id, case_id")
                 .eq("payment_link_id", paymentLinkId)
                 .maybeSingle();
+              if (actionLookupError) {
+                throw new Error(`Recovery action lookup failed: ${actionLookupError.message}`);
+              }
 
               if (actionRow?.case_id) {
-                if (!actionRow.accepted_success_event_id) {
-                  const updateRes = await supabase
-                    .from("recovery_actions")
-                    .update({
-                      accepted_success_event_id: providerEventId,
-                      recovery_payment_id: paymentId,
-                      status: "PAID",
-                      updated_at: new Date().toISOString(),
-                    })
-                    .eq("id", actionRow.id);
-                  requireDbMutation(
-                    updateRes,
-                    "update recovery_actions to PAID on success webhook",
-                  );
-                }
-
-                await ensureRecoveryPaymentEventApplied({
-                  caseId: actionRow.case_id,
-                  paymentLinkId,
-                  paymentId: paymentId || "unknown",
-                  amountMinor: paymentEntity?.amount || 0,
+                if (!paymentId) throw new Error("Recovery success webhook is missing payment ID.");
+                const claim = await claimRecoverySuccessEvent({
+                  actionId: actionRow.id,
                   providerEventId,
-                  eventType,
+                  paymentId,
                 });
+                if (claim.isOwner && !claim.workflowAppliedAt) {
+                  await ensureRecoveryPaymentEventApplied({
+                    actionId: claim.actionId,
+                    caseId: claim.caseId,
+                    paymentLinkId,
+                    paymentId: claim.recoveryPaymentId || paymentId,
+                    amountMinor: paymentEntity?.amount || 0,
+                    providerEventId,
+                    eventType,
+                  });
+                }
               }
             } else if (eventType === "payment.captured" && paymentId) {
               // Check if original payment was captured late
@@ -271,13 +268,14 @@ export default {
           });
         } catch (procErr: unknown) {
           console.error(`[Webhook Processing Failure for event ${providerEventId}]:`, procErr);
-          await supabase
+          const failedUpdate = await supabase
             .from("webhook_events")
             .update({
               processing_status: "FAILED_RETRYABLE",
               last_error: procErr instanceof Error ? procErr.message : "Processing error",
             })
             .eq("provider_event_id", providerEventId);
+          requireDbMutation(failedUpdate, "mark webhook event FAILED_RETRYABLE");
 
           return new Response(JSON.stringify({ error: "Webhook processing failed" }), {
             status: 500,

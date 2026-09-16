@@ -21,6 +21,48 @@ export type RecoveryResumeEvent =
       providerEventId?: string;
     };
 
+export interface RecoverySuccessClaim {
+  claimed: boolean;
+  isOwner: boolean;
+  actionId: string;
+  caseId: string;
+  acceptedEventId: string;
+  workflowAppliedAt: string | null;
+  recoveryPaymentId: string | null;
+}
+
+export async function claimRecoverySuccessEvent(params: {
+  actionId: string;
+  providerEventId: string;
+  paymentId: string;
+}): Promise<RecoverySuccessClaim> {
+  const { data, error } = await supabase.rpc("claim_recovery_success_event", {
+    p_action_id: params.actionId,
+    p_provider_event_id: params.providerEventId,
+    p_payment_id: params.paymentId,
+  });
+  if (error) throw new Error(`[Runner] Atomic success-event claim failed: ${error.message}`);
+  const row = (Array.isArray(data) ? data[0] : data) as {
+    claimed: boolean;
+    is_owner: boolean;
+    action_id: string;
+    case_id: string;
+    accepted_event_id: string;
+    workflow_applied_at: string | null;
+    recovery_payment_id: string | null;
+  } | null;
+  if (!row) throw new Error("[Runner] Atomic success-event claim returned no recovery action.");
+  return {
+    claimed: row.claimed,
+    isOwner: row.is_owner,
+    actionId: row.action_id,
+    caseId: row.case_id,
+    acceptedEventId: row.accepted_event_id,
+    workflowAppliedAt: row.workflow_applied_at,
+    recoveryPaymentId: row.recovery_payment_id,
+  };
+}
+
 export async function startRecoveryWorkflow(params: {
   caseId: string;
   originalOrderId: string;
@@ -103,6 +145,7 @@ export async function resumeWorkflowWithPaymentEvent(
 }
 
 export async function ensureRecoveryPaymentEventApplied(params: {
+  actionId: string;
   caseId: string;
   paymentLinkId?: string;
   paymentId: string;
@@ -110,6 +153,21 @@ export async function ensureRecoveryPaymentEventApplied(params: {
   amountMinor?: number;
   eventType?: string;
 }): Promise<void> {
+  if (!params.providerEventId)
+    throw new Error("Provider event ID is required for recovery resume.");
+
+  const { data: actionRow, error: actionError } = await supabase
+    .from("recovery_actions")
+    .select("accepted_success_event_id, workflow_event_applied_at, recovery_payment_id")
+    .eq("id", params.actionId)
+    .eq("case_id", params.caseId)
+    .maybeSingle();
+  if (actionError)
+    throw new Error(`[Runner] Failed to read recovery action: ${actionError.message}`);
+  if (!actionRow) throw new Error("[Runner] Accepted recovery action no longer exists.");
+  if (actionRow.accepted_success_event_id !== params.providerEventId) return;
+  if (actionRow.workflow_event_applied_at) return;
+
   // Check case terminal status from DB
   const { data: caseRow, error: caseError } = await supabase
     .from("recovery_cases")
@@ -130,25 +188,30 @@ export async function ensureRecoveryPaymentEventApplied(params: {
     return;
   }
 
-  // Update recovery_actions with new recovery payment ID
-  const paymentUpdate = await supabase
-    .from("recovery_actions")
-    .update({
-      recovery_payment_id: params.paymentId,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("case_id", params.caseId);
-  requireDbMutation(paymentUpdate, "persist recovery payment event");
+  const checkpointer = await getCheckpointer();
+  const graph = createRecoverGraph().compile({ checkpointer });
+  const config = { configurable: { thread_id: params.caseId } };
+  const durableState = await graph.getState(config);
+  const durableValues = durableState.values as Partial<RecoverState>;
+  const alreadyAdvanced =
+    durableValues.action?.recoveryPaymentId === params.paymentId ||
+    Boolean(durableValues.terminalStatus);
 
-  // Resume LangGraph workflow on the thread
-  await resumeWorkflowWithPaymentEvent(params.caseId, {
-    kind: "RECOVERY_PAYMENT_CAPTURED",
-    eventType: params.eventType || "payment.captured",
-    paymentId: params.paymentId,
-    paymentLinkId: params.paymentLinkId,
-    amountMinor: params.amountMinor,
-    providerEventId: params.providerEventId,
-  });
+  if (!alreadyAdvanced) {
+    await graph.invoke(
+      new Command({
+        resume: {
+          kind: "RECOVERY_PAYMENT_CAPTURED",
+          eventType: params.eventType || "payment.captured",
+          paymentId: params.paymentId,
+          paymentLinkId: params.paymentLinkId,
+          amountMinor: params.amountMinor,
+          providerEventId: params.providerEventId,
+        },
+      }),
+      config,
+    );
+  }
 
   // Mark workflow event applied on recovery_actions
   const appliedUpdate = await supabase
@@ -157,6 +220,8 @@ export async function ensureRecoveryPaymentEventApplied(params: {
       workflow_event_applied_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
-    .eq("case_id", params.caseId);
+    .eq("id", params.actionId)
+    .eq("accepted_success_event_id", params.providerEventId)
+    .is("workflow_event_applied_at", null);
   requireDbMutation(appliedUpdate, "mark recovery workflow event applied");
 }

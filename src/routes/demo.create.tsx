@@ -7,6 +7,7 @@ import {
   getSessionStatusFn,
   reconcileTestPaymentSessionFn,
 } from "@/lib/api/server-fns";
+import { transferSessionCapabilityToCase } from "@/lib/api/capability-storage";
 import { formatINR } from "@/lib/demo/types";
 
 declare global {
@@ -170,8 +171,7 @@ function CreatePayment() {
         // 1. Cheap database check for webhook-created case
         const session = await getSessionStatusFn({ data: realOrder.sessionId });
         if (session?.caseId) {
-          const token = sessionStorage.getItem(`recover:capability:session:${realOrder.sessionId}`);
-          if (token) sessionStorage.setItem(`recover:capability:case:${session.caseId}`, token);
+          transferSessionCapabilityToCase(sessionStorage, realOrder.sessionId, session.caseId);
           clearInterval(interval);
           setCheckoutState("FAILURE_CONFIRMED");
           navigate({ to: "/demo/payment/$id", params: { id: session.caseId } });
@@ -189,11 +189,11 @@ function CreatePayment() {
           });
 
           if (reconciliation.status === "FAILURE_CONFIRMED" && reconciliation.caseId) {
-            const token = sessionStorage.getItem(
-              `recover:capability:session:${realOrder.sessionId}`,
+            transferSessionCapabilityToCase(
+              sessionStorage,
+              realOrder.sessionId,
+              reconciliation.caseId,
             );
-            if (token)
-              sessionStorage.setItem(`recover:capability:case:${reconciliation.caseId}`, token);
             clearInterval(interval);
             setCheckoutState("FAILURE_CONFIRMED");
             navigate({ to: "/demo/payment/$id", params: { id: reconciliation.caseId } });
@@ -361,6 +361,7 @@ function CreatePayment() {
       });
 
       if (res.status === "FAILURE_CONFIRMED" && res.caseId) {
+        transferSessionCapabilityToCase(sessionStorage, realOrder.sessionId, res.caseId);
         setCheckoutState("FAILURE_CONFIRMED");
         navigate({ to: "/demo/payment/$id", params: { id: res.caseId } });
         return;
