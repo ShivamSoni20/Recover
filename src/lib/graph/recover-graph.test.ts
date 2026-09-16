@@ -176,13 +176,36 @@ function createChainMock(finalResult: any = { data: null, error: null }) {
 
 vi.mock("../db/supabase", () => ({
   supabase: {
-    from: vi.fn().mockImplementation(() => createChainMock()),
+    from: vi.fn().mockImplementation((table: string) => {
+      if (table === "recovery_policy_versions") {
+        return createChainMock({
+          data: {
+            id: "policy-test-id",
+            version_tag: "policy-test",
+            is_active: true,
+            max_recovery_attempts: 2,
+            max_autonomous_amount_minor: 1000000,
+            require_approval_above_minor: 0,
+            allow_fresh_checkout: true,
+            link_expiry_minutes: 60,
+            min_diagnosis_confidence: 0.7,
+            block_risk_or_policy_failures: true,
+            block_unknown_failures: true,
+          },
+          error: null,
+        });
+      }
+      if (table === "recovery_actions") return createChainMock({ data: [], error: null });
+      return createChainMock();
+    }),
   },
 }));
 
 describe("LangGraph Recover Workflow - Complete Closed Loop", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.RECOVER_RAZORPAY_MODE = "test";
+    process.env.RAZORPAY_KEY_ID = "rzp_test_fixture";
   });
 
   it("executes through canonicalization, diagnosis, gate, and pauses at approval interrupt", async () => {

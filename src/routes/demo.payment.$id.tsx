@@ -128,10 +128,16 @@ function PaymentCase() {
   const handleRecover = async () => {
     setApprovalPhase("recheck");
     try {
+      const capabilityToken = sessionStorage.getItem(`recover:capability:case:${caseData.id}`);
+      if (!capabilityToken)
+        throw new Error(
+          "This browser session does not hold the capability required to approve this case.",
+        );
       await submitDecisionFn({
         data: {
           caseId: caseData.id,
           decision: "APPROVE_RECOVERY",
+          capabilityToken,
         },
       });
       setApprovalPhase("creating");
@@ -167,10 +173,16 @@ function PaymentCase() {
 
   const handleEscalate = async () => {
     try {
+      const capabilityToken = sessionStorage.getItem(`recover:capability:case:${caseData.id}`);
+      if (!capabilityToken)
+        throw new Error(
+          "This browser session does not hold the capability required to decide this case.",
+        );
       await submitDecisionFn({
         data: {
           caseId: caseData.id,
           decision: "ESCALATE",
+          capabilityToken,
         },
       });
       loadCase();

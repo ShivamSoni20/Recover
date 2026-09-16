@@ -3,6 +3,35 @@ import { reconcileTestPaymentSession } from "@/lib/recovery/reconcile-session";
 import * as paymentsMod from "@/lib/razorpay/payments";
 import * as processMod from "@/lib/recovery/process-failed-payment";
 import { supabase } from "@/lib/db/supabase";
+import { verifyCaseCapability } from "@/lib/api/server-fns";
+
+describe("case capability authorization", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("rejects a missing capability token", async () => {
+    await expect(verifyCaseCapability("case-1")).rejects.toThrow("required");
+  });
+
+  it("rejects an invalid capability token", async () => {
+    vi.spyOn(supabase, "from").mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+      }),
+    } as any);
+    await expect(verifyCaseCapability("case-1", "invalid")).rejects.toThrow("invalid");
+  });
+
+  it("accepts a matching capability token", async () => {
+    vi.spyOn(supabase, "from").mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({ data: { id: "session-1" }, error: null }),
+      }),
+    } as any);
+    await expect(verifyCaseCapability("case-1", "valid-token")).resolves.toBeUndefined();
+  });
+});
 
 describe("reconcileTestPaymentSession", () => {
   beforeEach(() => {

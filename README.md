@@ -1,7 +1,18 @@
 # Recover
 
+> **Real-provider proof:** `scripts/live-golden-e2e.ts` and `scripts/finish-golden-live.ts`
+> are developer diagnostics that may manufacture webhook inputs. They do not prove Razorpay
+> delivered a webhook. A golden E2E requires a fresh browser-created Test Order, an actual failed
+> Razorpay Test Checkout payment, Razorpay-delivered failure and success webhooks to the deployed
+> endpoint, one durable recovery action, a hosted Payment Link payment, and a persisted VERIFIED
+> receipt ending in `RECOVERED_VERIFIED`.
+
+> **Known hackathon-scope deferral:** public endpoint rate limiting still requires a durable,
+> deployment-wide store. Do not expose the demo broadly until a DB-backed limiter is deployed for
+> payment creation, reconciliation, and decisions; Vercel instance-local counters are insufficient.
+
 > **A failed payment that knows what to do next.**
-> *Razorpay AI Buildathon — Track 03: AI Revenue Recovery*
+> _Razorpay AI Buildathon — Track 03: AI Revenue Recovery_
 
 ---
 
@@ -10,6 +21,7 @@
 **Recover** converts failed payments into verified recovered revenue using an agentic AI architecture with deterministic financial safety boundaries.
 
 ### Core Product Principle
+
 - **AI CHOOSES THE RECOVERY STRATEGY.**
 - **CODE DECIDES WHETHER IT MAY EXECUTE.**
 - **RAZORPAY PROVES WHETHER RECOVERY ACTUALLY HAPPENED.**
@@ -60,12 +72,12 @@ RECOVERED — VERIFIED
 
 ## Why LangChain, LangGraph & RAG?
 
-| Component | Responsibility | What It Must NOT Do |
-|---|---|---|
-| **LangChain** | Model abstraction, structured schema output (Zod), prompt composition, and embedding interfaces. | Cannot mutate money, execute orders, or authorize financial transactions. |
-| **LangGraph** | Durable multi-step state machine, human approval interrupts, long-running wait states for customer checkout, and webhook resumes. | Does not fabricate financial success without provider proof. |
-| **RAG (pgvector)** | Curated failure runbooks and merchant policy retrieval to provide contextual error diagnosis. | Does not make policy decisions or override deterministic rules. |
-| **Recovery Gate** | Pure deterministic code evaluating provider state, attempt limits, amount thresholds, and risk filters. | Does not invoke the LLM. |
+| Component          | Responsibility                                                                                                                    | What It Must NOT Do                                                       |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| **LangChain**      | Model abstraction, structured schema output (Zod), prompt composition, and embedding interfaces.                                  | Cannot mutate money, execute orders, or authorize financial transactions. |
+| **LangGraph**      | Durable multi-step state machine, human approval interrupts, long-running wait states for customer checkout, and webhook resumes. | Does not fabricate financial success without provider proof.              |
+| **RAG (pgvector)** | Curated failure runbooks and merchant policy retrieval to provide contextual error diagnosis.                                     | Does not make policy decisions or override deterministic rules.           |
+| **Recovery Gate**  | Pure deterministic code evaluating provider state, attempt limits, amount thresholds, and risk filters.                           | Does not invoke the LLM.                                                  |
 
 ---
 
@@ -90,7 +102,7 @@ The database schema is managed via tracked migrations in `supabase/migrations/`:
 5. **`00005_webhook_claim_rpc.sql`**: Atomic webhook event claim RPC.
 6. **`00006_final_runtime_correctness.sql`**: Leased webhook claim recovery (> 2 min lease), service_role security hardening, `verification_receipts.action_id`, and `recovery_actions.workflow_event_applied_at`.
 
-*Note: LangGraph durable checkpoint tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`) are auto-initialized via `PostgresSaver.setup()`.*
+_Note: LangGraph durable checkpoint tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`) are auto-initialized via `PostgresSaver.setup()`._
 
 ---
 

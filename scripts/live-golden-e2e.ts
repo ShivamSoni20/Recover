@@ -1,6 +1,8 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+// DEVELOPER DIAGNOSTIC ONLY: manufactures local webhook inputs and is not proof of Razorpay delivery.
+
 import crypto from "crypto";
 import { fetchRazorpayOrder } from "../src/lib/razorpay/orders";
 import { fetchRazorpayPayment } from "../src/lib/razorpay/payments";

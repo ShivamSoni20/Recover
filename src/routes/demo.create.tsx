@@ -145,6 +145,7 @@ function CreatePayment() {
     amountMinor: number;
     currency: string;
     razorpayKeyId: string;
+    capabilityToken: string;
   } | null>(null);
 
   const parsed = Number(amount);
@@ -169,6 +170,8 @@ function CreatePayment() {
         // 1. Cheap database check for webhook-created case
         const session = await getSessionStatusFn({ data: realOrder.sessionId });
         if (session?.caseId) {
+          const token = sessionStorage.getItem(`recover:capability:session:${realOrder.sessionId}`);
+          if (token) sessionStorage.setItem(`recover:capability:case:${session.caseId}`, token);
           clearInterval(interval);
           setCheckoutState("FAILURE_CONFIRMED");
           navigate({ to: "/demo/payment/$id", params: { id: session.caseId } });
@@ -186,6 +189,11 @@ function CreatePayment() {
           });
 
           if (reconciliation.status === "FAILURE_CONFIRMED" && reconciliation.caseId) {
+            const token = sessionStorage.getItem(
+              `recover:capability:session:${realOrder.sessionId}`,
+            );
+            if (token)
+              sessionStorage.setItem(`recover:capability:case:${reconciliation.caseId}`, token);
             clearInterval(interval);
             setCheckoutState("FAILURE_CONFIRMED");
             navigate({ to: "/demo/payment/$id", params: { id: reconciliation.caseId } });
@@ -236,6 +244,7 @@ function CreatePayment() {
         },
       });
 
+      sessionStorage.setItem(`recover:capability:session:${res.sessionId}`, res.capabilityToken);
       setRealOrder(res);
     } catch (err: unknown) {
       setErrorMessage(

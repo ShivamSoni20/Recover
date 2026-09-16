@@ -344,10 +344,9 @@ describe("Recover Specification Matrix & Runtime Correctness (Tests 1 - 24)", ()
   // Test 12: Late Original + Open Link -> Cancel succeeds -> STOPPED_ALREADY_PAID
   it("Test 12: Late original payment capture halts recovery and cancels open payment link", async () => {
     const cancelSpy = vi.spyOn(linksMod, "cancelPaymentLink").mockResolvedValue({} as any);
-    vi.spyOn(linksMod, "fetchPaymentLink").mockResolvedValue({
-      id: "plink_open_1",
-      status: "created",
-    } as any);
+    vi.spyOn(linksMod, "fetchPaymentLink")
+      .mockResolvedValueOnce({ id: "plink_open_1", status: "created" } as any)
+      .mockResolvedValueOnce({ id: "plink_open_1", status: "cancelled" } as any);
     vi.spyOn(paymentsMod, "fetchRazorpayPayment").mockResolvedValue({
       id: "pay_orig_late",
       status: "captured",
@@ -398,8 +397,8 @@ describe("Recover Specification Matrix & Runtime Correctness (Tests 1 - 24)", ()
     expect(res.terminalStatus).toBe("DOUBLE_PAYMENT_RISK");
   });
 
-  // Test 15: Uncertainty NOT_FOUND -> Safe Retry Allowed
-  it("Test 15: Uncertainty NOT_FOUND allows safe retry with same referenceId", async () => {
+  // Test 15: Uncertainty NOT_FOUND -> fail safe without waiting on a nonexistent link
+  it("Test 15: Uncertainty NOT_FOUND fails safe and retains same referenceId", async () => {
     vi.spyOn(linksMod, "findPaymentLinkByReferenceId").mockResolvedValue({
       status: "NOT_FOUND",
     });
@@ -409,9 +408,15 @@ describe("Recover Specification Matrix & Runtime Correctness (Tests 1 - 24)", ()
       action: { actionId: "act_1", referenceId: "rcv_case_1", status: "UNCERTAIN" },
     };
 
+    vi.spyOn(supabase as any, "from").mockReturnValue({
+      update: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) }),
+      insert: vi.fn().mockResolvedValue({ error: null }),
+    } as any);
+
     const res = await reconcileLinkCreationNode(state);
-    expect(res.action?.status).toBe("NOT_STARTED");
+    expect(res.action?.status).toBe("UNCERTAIN");
     expect(res.action?.referenceId).toBe("rcv_case_1");
+    expect(res.terminalStatus).toBe("FAILED_SAFE");
   });
 
   // Test 16: Uncertainty PROVIDER_UNAVAILABLE -> Remains UNCERTAIN & Fails Safe

@@ -6,6 +6,14 @@ import { getPgPool } from "../db/pg-pool";
 let checkpointerInstance: BaseCheckpointSaver | null = null;
 const memorySaverInstance = new MemorySaver();
 
+function volatileCheckpointerAllowed(): boolean {
+  return (
+    process.env.NODE_ENV === "test" ||
+    (process.env.NODE_ENV !== "production" &&
+      process.env.RECOVER_ALLOW_MEMORY_CHECKPOINTER === "true")
+  );
+}
+
 export async function getCheckpointer(): Promise<BaseCheckpointSaver> {
   if (checkpointerInstance) {
     return checkpointerInstance;
@@ -18,11 +26,14 @@ export async function getCheckpointer(): Promise<BaseCheckpointSaver> {
     checkpointerInstance = pgSaver;
     return checkpointerInstance;
   } catch (err) {
-    console.warn(
-      "[Checkpointer Notice]: Direct PostgreSQL pool unavailable, using resilient state checkpointer:",
-      err instanceof Error ? err.message : err,
+    if (volatileCheckpointerAllowed()) {
+      console.warn("[Checkpointer] Explicit volatile fallback enabled:", err);
+      return memorySaverInstance;
+    }
+    throw new Error(
+      "[Checkpointer] Durable PostgreSQL checkpointing is unavailable; refusing to run workflow.",
+      { cause: err },
     );
-    return memorySaverInstance;
   }
 }
 

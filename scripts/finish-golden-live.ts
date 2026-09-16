@@ -1,6 +1,8 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+// DEVELOPER DIAGNOSTIC ONLY: may synthesize provider inputs and is not a real golden E2E proof.
+
 import crypto from "crypto";
 import { fetchPaymentLink } from "../src/lib/razorpay/payment-links";
 import { fetchRazorpayPayment } from "../src/lib/razorpay/payments";

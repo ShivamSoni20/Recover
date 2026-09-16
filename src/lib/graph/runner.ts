@@ -3,6 +3,7 @@ import { createRecoverGraph } from "./recover-graph";
 import { getCheckpointer } from "./checkpointer";
 import type { RecoverState } from "./state";
 import { supabase } from "../db/supabase";
+import { requireDbMutation } from "../db/db-utils";
 
 export type RecoveryResumeEvent =
   | {
@@ -70,8 +71,9 @@ export async function ensureRecoveryWorkflowStarted(params: {
       await graph.invoke(null, config);
       return;
     } catch (stateErr) {
-      console.warn(`[LangGraph Runner] State inspection notice for ${params.caseId}:`, stateErr);
-      return;
+      throw new Error(`[LangGraph Runner] Durable state inspection failed for ${params.caseId}.`, {
+        cause: stateErr,
+      });
     }
   }
 
@@ -109,11 +111,12 @@ export async function ensureRecoveryPaymentEventApplied(params: {
   eventType?: string;
 }): Promise<void> {
   // Check case terminal status from DB
-  const { data: caseRow } = await supabase
+  const { data: caseRow, error: caseError } = await supabase
     .from("recovery_cases")
     .select("status, terminal_status")
     .eq("id", params.caseId)
     .maybeSingle();
+  if (caseError) throw new Error(`[Runner] Failed to read recovery case: ${caseError.message}`);
 
   if (
     caseRow &&
@@ -128,13 +131,14 @@ export async function ensureRecoveryPaymentEventApplied(params: {
   }
 
   // Update recovery_actions with new recovery payment ID
-  await supabase
+  const paymentUpdate = await supabase
     .from("recovery_actions")
     .update({
       recovery_payment_id: params.paymentId,
       updated_at: new Date().toISOString(),
     })
     .eq("case_id", params.caseId);
+  requireDbMutation(paymentUpdate, "persist recovery payment event");
 
   // Resume LangGraph workflow on the thread
   await resumeWorkflowWithPaymentEvent(params.caseId, {
@@ -147,11 +151,12 @@ export async function ensureRecoveryPaymentEventApplied(params: {
   });
 
   // Mark workflow event applied on recovery_actions
-  await supabase
+  const appliedUpdate = await supabase
     .from("recovery_actions")
     .update({
       workflow_event_applied_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
     .eq("case_id", params.caseId);
+  requireDbMutation(appliedUpdate, "mark recovery workflow event applied");
 }

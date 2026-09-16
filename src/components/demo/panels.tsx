@@ -1,6 +1,5 @@
 import { Bot, CheckCircle2, ShieldCheck } from "lucide-react";
 import { Field, PaymentStatusBadge, Panel, StepRow } from "./ui";
-import { DIAGNOSIS_EVIDENCE } from "@/lib/demo/data";
 import { formatINR, type DemoCase, type GateCheck } from "@/lib/demo/types";
 
 export function ProviderTruthPanel({ demoCase }: { demoCase: DemoCase }) {
@@ -18,7 +17,10 @@ export function ProviderTruthPanel({ demoCase }: { demoCase: DemoCase }) {
         <Field label="Order" value={demoCase.orderId} />
         <Field label="Amount" value={formatINR(demoCase.amountMinor)} />
         <Field label="Currency" value={demoCase.currency} />
-        <Field label="Status" value={<PaymentStatusBadge status="FAILED" />} />
+        <Field
+          label="Status"
+          value={<PaymentStatusBadge status={demoCase.paymentStatus || "UNKNOWN"} />}
+        />
         <Field label="Method" value={demoCase.method} />
         <Field label="Failure reason" value={demoCase.failureReason} />
         <Field label="Timestamp" value={demoCase.failedAt ?? "—"} />

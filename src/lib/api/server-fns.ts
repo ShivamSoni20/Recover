@@ -10,6 +10,22 @@ import {
 } from "@/lib/recovery/reconcile-session";
 import { requireDbMutation } from "@/lib/db/db-utils";
 
+export async function verifyCaseCapability(
+  caseId: string,
+  capabilityToken?: string,
+): Promise<void> {
+  if (!capabilityToken) throw new Error("A valid capability token is required.");
+  const hash = nodeCrypto.createHash("sha256").update(capabilityToken).digest("hex");
+  const { data: session, error: sessionError } = await supabase
+    .from("test_payment_sessions")
+    .select("id")
+    .eq("recovery_case_id", caseId)
+    .eq("capability_token_hash", hash)
+    .maybeSingle();
+  if (sessionError) throw new Error("Capability verification failed safely.");
+  if (!session) throw new Error("Unauthorized or invalid capability token.");
+}
+
 export const createTestPaymentFn = createServerFn({ method: "POST" })
   .validator(
     (d: {
@@ -228,32 +244,11 @@ export const submitDecisionFn = createServerFn({ method: "POST" })
     (d: {
       caseId: string;
       decision: "APPROVE_RECOVERY" | "ESCALATE" | "REJECT";
-      capabilityToken?: string;
+      capabilityToken: string;
     }) => d,
   )
   .handler(async ({ data }) => {
-    // P1-1: Capability verification if capability token provided
-    if (data.capabilityToken) {
-      const hash = nodeCrypto.createHash("sha256").update(data.capabilityToken).digest("hex");
-      const { data: session } = await supabase
-        .from("test_payment_sessions")
-        .select("id")
-        .eq("recovery_case_id", data.caseId)
-        .eq("capability_token_hash", hash)
-        .maybeSingle();
-
-      if (!session) {
-        // If not matching specific session, verify case exists
-        const { data: caseExists } = await supabase
-          .from("recovery_cases")
-          .select("id")
-          .eq("id", data.caseId)
-          .maybeSingle();
-        if (!caseExists) {
-          throw new Error("Unauthorized or invalid recovery case.");
-        }
-      }
-    }
+    await verifyCaseCapability(data.caseId, data.capabilityToken);
 
     const insertRes = await supabase.from("recovery_decisions").insert({
       case_id: data.caseId,
